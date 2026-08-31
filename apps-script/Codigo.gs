@@ -82,6 +82,14 @@ function guardarPerfil_(p) {
   PropertiesService.getScriptProperties().setProperty('perfil', JSON.stringify(p));
 }
 
+function categoriasEstudio_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('categorias_estudio');
+  return raw ? JSON.parse(raw) : ['Ecografía', 'Análisis', 'Vacunas', 'Pediatra', 'Otro'];
+}
+function guardarCategoriasEstudio_(lista) {
+  PropertiesService.getScriptProperties().setProperty('categorias_estudio', JSON.stringify(lista));
+}
+
 // Carpeta de Drive donde se guardan los archivos subidos ("estudios").
 // Se crea una sola vez y se recuerda el id en las propiedades del script.
 function carpetaEstudios_() {
@@ -163,6 +171,14 @@ function doPost(e) {
       return json_({ ok: true, mensaje: 'Datos guardados', perfil: p });
     }
 
+    if (b.accion === 'categorias_guardar') {
+      var lista = Array.isArray(b.categorias)
+        ? b.categorias.map(function (c) { return String(c).trim(); }).filter(function (c) { return c; })
+        : [];
+      guardarCategoriasEstudio_(lista);
+      return json_({ ok: true, categorias: lista });
+    }
+
     if (b.accion === 'subir_archivo') {
       if (!b.datos) return json_({ ok: false, mensaje: 'Sin archivo' });
       var bytes = Utilities.base64Decode(b.datos);
@@ -202,7 +218,11 @@ function doGet(e) {
 
   if (action === 'estudios') {
     var todos = leerRegistros_(); // sin límite: que no se pierdan estudios viejos entre el ruido diario
-    return json_({ ok: true, registros: todos.filter(function (r) { return r.tipo_evento === 'estudio'; }) });
+    return json_({
+      ok: true,
+      registros: todos.filter(function (r) { return r.tipo_evento === 'estudio'; }),
+      categorias: categoriasEstudio_()
+    });
   }
 
   if (action === 'semana') {

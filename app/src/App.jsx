@@ -90,6 +90,7 @@ export default function App() {
   const [aviso, setAviso] = useState(null);
   const [semana, setSemana] = useState(null);
   const [estudios, setEstudios] = useState(null);
+  const [categoriasEstudio, setCategoriasEstudio] = useState(null);
   const [perfil, setPerfil] = useState({ nombre: 'Emma', nacimiento: NACIMIENTO });
   const [avisoTeta, setAvisoTeta] = useState(false);
   const [notifPermiso, setNotifPermiso] = useState(
@@ -138,7 +139,11 @@ export default function App() {
   }, [vista, semana]);
 
   const cargarEstudios = useCallback(() => {
-    consultar('estudios').then(r => r.ok && setEstudios(r.registros || []));
+    consultar('estudios').then(r => {
+      if (!r.ok) return;
+      setEstudios(r.registros || []);
+      setCategoriasEstudio(r.categorias || []);
+    });
   }, []);
 
   useEffect(() => {
@@ -393,9 +398,18 @@ export default function App() {
       {vista === 'estudios' && (
         <PantallaEstudios
           estudios={estudios}
-          onSubido={() => { setEstudios(null); cargarEstudios(); }}
+          categorias={categoriasEstudio}
+          onSubido={() => { setEstudios(null); setCategoriasEstudio(null); cargarEstudios(); }}
           onBorrar={fila => {
             llamar({ accion: 'eliminar', fila }).then(() => { setEstudios(null); cargarEstudios(); });
+          }}
+          onMover={(fila, cat) => {
+            setEstudios(es => es && es.map(r => r.fila === fila ? { ...r, archivo_categoria: cat } : r));
+            llamar({ accion: 'corregir', fila, archivo_categoria: cat });
+          }}
+          onCategorias={lista => {
+            setCategoriasEstudio(lista);
+            llamar({ accion: 'categorias_guardar', categorias: lista });
           }}
         />
       )}
@@ -515,15 +529,22 @@ export default function App() {
 }
 
 const MAX_BYTES_ARCHIVO = 15 * 1024 * 1024;
-const CATEGORIAS_ESTUDIO = ['Ecografía', 'Análisis', 'Vacunas', 'Pediatra', 'Otro'];
+const CATEGORIA_DEFECTO = ['Ecografía', 'Análisis', 'Vacunas', 'Pediatra', 'Otro'];
 
-function PantallaEstudios({ estudios, onSubido, onBorrar }) {
+function PantallaEstudios({ estudios, categorias, onSubido, onBorrar, onMover, onCategorias }) {
   const [archivo, setArchivo] = useState(null);
   const [descripcion, setDescripcion] = useState('');
-  const [categoria, setCategoria] = useState('Otro');
+  const [categoria, setCategoria] = useState('');
+  const [nuevaCategoria, setNuevaCategoria] = useState('');
   const [subiendo, setSubiendo] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef(null);
+
+  const listaCategorias = categorias || CATEGORIA_DEFECTO;
+
+  useEffect(() => {
+    if (listaCategorias.length && !listaCategorias.includes(categoria)) setCategoria(listaCategorias[0]);
+  }, [categorias]); // eslint-disable-line
 
   const grupos = useMemo(() => {
     if (!estudios) return null;
@@ -533,11 +554,11 @@ function PantallaEstudios({ estudios, onSubido, onBorrar }) {
       (porCategoria[cat] = porCategoria[cat] || []).push(r);
     });
     const orden = [
-      ...CATEGORIAS_ESTUDIO.filter(c => porCategoria[c]),
-      ...Object.keys(porCategoria).filter(c => !CATEGORIAS_ESTUDIO.includes(c)),
+      ...listaCategorias.filter(c => porCategoria[c]),
+      ...Object.keys(porCategoria).filter(c => !listaCategorias.includes(c)),
     ];
     return orden.map(cat => ({ cat, items: porCategoria[cat] }));
-  }, [estudios]);
+  }, [estudios, categorias]); // eslint-disable-line
 
   function elegirArchivo(e) {
     const f = e.target.files[0] || null;
@@ -563,7 +584,6 @@ function PantallaEstudios({ estudios, onSubido, onBorrar }) {
         if (res.ok) {
           setArchivo(null);
           setDescripcion('');
-          setCategoria('Otro');
           if (inputRef.current) inputRef.current.value = '';
           onSubido();
         } else {
@@ -575,9 +595,43 @@ function PantallaEstudios({ estudios, onSubido, onBorrar }) {
     lector.readAsDataURL(archivo);
   }
 
+  function agregarCategoria() {
+    const nombre = nuevaCategoria.trim();
+    setNuevaCategoria('');
+    if (!nombre || listaCategorias.includes(nombre)) return;
+    onCategorias([...listaCategorias, nombre]);
+  }
+
+  function eliminarCategoria(c) {
+    onCategorias(listaCategorias.filter(x => x !== c));
+    if (categoria === c) setCategoria('');
+  }
+
   return (
     <section className="pantalla pad" style={{ paddingTop: 14 }}>
-      <div className="rotulo" style={{ marginBottom: 8 }}>Subir estudio</div>
+      <div className="rotulo" style={{ marginBottom: 8 }}>Categorías</div>
+      <hr className="regla" style={{ marginBottom: 12 }} />
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+        {listaCategorias.map(c => (
+          <span key={c} style={{ display: 'flex', alignItems: 'center', gap: 2, background: 'var(--n-200)', padding: '6px 4px 6px 12px', fontSize: 12, fontWeight: 700 }}>
+            {c}
+            <button onClick={() => eliminarCategoria(c)} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 6 }} aria-label={'Borrar categoría ' + c}>
+              <Icono tipo="cerrar" s={12} />
+            </button>
+          </span>
+        ))}
+        {!listaCategorias.length && <span style={{ fontSize: 12, color: 'var(--n-600)' }}>No hay categorías todavía.</span>}
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input className="entrada-texto" placeholder="Nueva categoría" value={nuevaCategoria}
+               onChange={e => setNuevaCategoria(e.target.value)}
+               onKeyDown={e => e.key === 'Enter' && agregarCategoria()} style={{ flex: 1 }} />
+        <button className="btn btn-secundario" style={{ width: 'auto', padding: '0 18px' }} onClick={agregarCategoria}>
+          Agregar
+        </button>
+      </div>
+
+      <div className="rotulo" style={{ margin: '24px 0 8px' }}>Subir estudio</div>
       <hr className="regla" style={{ marginBottom: 12 }} />
       <div className="subida">
         <Icono tipo="subir" s={26} />
@@ -585,7 +639,7 @@ function PantallaEstudios({ estudios, onSubido, onBorrar }) {
         <input className="entrada-texto" placeholder="Descripción (opcional) · ej. Ecografía 20 semanas"
                value={descripcion} onChange={e => setDescripcion(e.target.value)} style={{ marginTop: 6 }} />
         <div className="opciones" style={{ marginTop: 8, width: '100%', flexWrap: 'wrap' }}>
-          {CATEGORIAS_ESTUDIO.map(c => (
+          {listaCategorias.map(c => (
             <button key={c} type="button" className={categoria === c ? 'on' : ''} onClick={() => setCategoria(c)}>{c}</button>
           ))}
         </div>
@@ -609,10 +663,18 @@ function PantallaEstudios({ estudios, onSubido, onBorrar }) {
                 <span className="t">{r.notas || r.archivo_nombre}</span>
                 <span className="s">{r.archivo_nombre}{r.iso ? ' · ' + new Date(r.iso).toLocaleDateString('es') : ''}</span>
               </a>
-              <button onClick={() => onBorrar(r.fila)}
-                      style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Borrar">
-                <Icono tipo="cerrar" s={16} />
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <select value={r.archivo_categoria || 'Otro'} onChange={e => onMover(r.fila, e.target.value)}
+                        style={{ fontSize: 10.5, fontWeight: 700, border: '1px solid var(--divider)', background: 'var(--bg)', color: 'var(--text)', padding: '5px 2px', maxWidth: 76 }}>
+                  {(listaCategorias.includes(r.archivo_categoria) ? listaCategorias : [...listaCategorias, r.archivo_categoria || 'Otro']).map(c => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+                <button onClick={() => onBorrar(r.fila)}
+                        style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Borrar">
+                  <Icono tipo="cerrar" s={16} />
+                </button>
+              </div>
             </div>
           ))}
         </div>
