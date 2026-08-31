@@ -1801,7 +1801,7 @@ function HojaDetalle({ hoja, esquema, registros, perfil, onCerrar, onGuardar, on
           <button onClick={hoja.modo === 'editar' ? onBorrar : onCerrar}>
             {hoja.modo === 'editar' ? 'Borrar' : 'Cancelar'}
           </button>
-          <button className="guardar"
+          <button className="guardar" disabled={hoja.tipo === 'vacuna' && !valores.dosis}
                   onClick={() => onGuardar(hoja.modo === 'editar' ? { ...valores, timestamp: deLocalISO(hora) } : valores)}>
             Guardar
           </button>
