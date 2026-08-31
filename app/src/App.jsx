@@ -56,8 +56,20 @@ function hace(desde) {
   return Math.floor(min / 60) + ' h ' + dosD(min % 60);
 }
 
+// "2026-04-19" con `new Date(...)` se interpreta como medianoche UTC, así
+// que en husos horarios detrás de UTC (como Argentina) puede correr un día
+// para atrás. Para fechas de sólo-día (nacimiento, dosis del esquema) hay
+// que armar la fecha en horario local.
+function fechaLocal(iso) {
+  if (typeof iso === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    const [a, m, d] = iso.split('-').map(Number);
+    return new Date(a, m - 1, d);
+  }
+  return new Date(iso);
+}
+
 function mesesDeVida(iso) {
-  const n = new Date(iso), h = new Date();
+  const n = fechaLocal(iso), h = new Date();
   let meses = (h.getFullYear() - n.getFullYear()) * 12 + h.getMonth() - n.getMonth();
   const ref = new Date(n); ref.setMonth(ref.getMonth() + meses);
   if (ref > h) meses -= 1;
@@ -65,7 +77,7 @@ function mesesDeVida(iso) {
 }
 
 function edad(iso) {
-  const n = new Date(iso), h = new Date();
+  const n = fechaLocal(iso), h = new Date();
   let meses = (h.getFullYear() - n.getFullYear()) * 12 + h.getMonth() - n.getMonth();
   const ref = new Date(n); ref.setMonth(n.getMonth() + meses);
   if (ref > h) { meses -= 1; ref.setMonth(ref.getMonth() - 1); }
@@ -119,11 +131,58 @@ export default function App() {
     const v = Number(localStorage.getItem('ultima_sync_emma'));
     return v ? new Date(v) : null;
   });
+  const [esquema, setEsquemaState] = useState(() => leerEsquema());
+  const [medicamentos, setMedicamentosState] = useState(() => leerMedicamentos());
+  const [tomasMed, setTomasMedState] = useState(() => leerTomasMed());
+  const [avisosMed, setAvisosMed] = useState([]); // ids de medicamentos con dosis vencida
   const pulsacion = useRef(null);
   const sostenido = useRef(false);
   const toque = useRef(null);
   const avisadoRef = useRef(false);
+  const avisadosMedRef = useRef(new Set());
   const perfilCargado = useRef(false); // sólo se toma del servidor una vez, para no pisar una edición en curso
+
+  function persistirEsquemaApp(lista) {
+    setEsquemaState(lista);
+    guardarEsquema(lista);
+  }
+  function persistirMedicamentos(lista) {
+    setMedicamentosState(lista);
+    guardarMedicamentos(lista);
+  }
+  function registrarToma(medId) {
+    const nueva = { id: 'tm' + Date.now(), medId, iso: new Date().toISOString() };
+    const lista = [nueva, ...tomasMed];
+    setTomasMedState(lista);
+    guardarTomasMed(lista);
+    avisadosMedRef.current.delete(medId);
+    setAvisosMed(a => a.filter(id => id !== medId));
+  }
+  function proximaDosisMed(med) {
+    const tomasDelMed = tomasMed.filter(t => t.medId === med.id).sort((a, b) => b.iso.localeCompare(a.iso));
+    const base = tomasDelMed[0] ? new Date(tomasDelMed[0].iso) : new Date(med.inicio);
+    return new Date(base.getTime() + (tomasDelMed[0] ? med.frecuenciaHoras * 3600000 : 0));
+  }
+  function medicamentoVigente(med) {
+    const fin = new Date(new Date(med.inicio).getTime() + med.dias * 86400000);
+    return ahora <= fin.getTime();
+  }
+
+  useEffect(() => {
+    const vigentes = medicamentos.filter(medicamentoVigente);
+    const vencidos = vigentes.filter(m => ahora >= proximaDosisMed(m).getTime());
+    vencidos.forEach(m => {
+      if (!avisadosMedRef.current.has(m.id)) {
+        avisadosMedRef.current.add(m.id);
+        setAvisosMed(a => a.includes(m.id) ? a : [...a, m.id]);
+        if (notifPermiso === 'granted') {
+          try { new Notification('Hora de ' + m.nombre, { body: 'Toca la próxima dosis.' }); } catch {}
+        }
+      }
+    });
+    // si un medicamento dejó de estar vigente (venció el tratamiento), sacar su aviso
+    setAvisosMed(a => a.filter(id => vigentes.some(m => m.id === id)));
+  }, [ahora, medicamentos, tomasMed, notifPermiso]);
 
   const ultimaTeta = useMemo(() => {
     const r = registros.find(x => x.tipo_evento === 'teta');
@@ -361,6 +420,15 @@ export default function App() {
           Alimente al ácaro · última toma hace {hace(ultimaTeta)}
         </button>
       )}
+      {avisosMed.map(medId => {
+        const med = medicamentos.find(m => m.id === medId);
+        if (!med) return null;
+        return (
+          <button key={medId} className="cola alerta" onClick={() => registrarToma(medId)}>
+            Hora de {med.nombre} · toca ahora
+          </button>
+        );
+      })}
 
       {vista === 'registrar' && (
         <section className="pantalla">
@@ -536,7 +604,16 @@ export default function App() {
         </section>
       )}
 
-      {vista === 'citas' && <PantallaCitas registros={registros} perfil={perfil} />}
+      {vista === 'citas' && (
+        <PantallaCitas registros={registros} perfil={perfil} esquema={esquema} medicamentos={medicamentos}
+                       onVerVacunas={() => setVista('vacunas')} />
+      )}
+
+      {vista === 'vacunas' && (
+        <PantallaVacunas registros={registros} perfil={perfil} esquema={esquema} onEsquemaChange={persistirEsquemaApp}
+                         medicamentos={medicamentos} onMedicamentosChange={persistirMedicamentos}
+                         tomasMed={tomasMed} onRegistrarToma={registrarToma} />
+      )}
 
       {vista === 'estudios' && (
         <PantallaEstudios
@@ -640,6 +717,9 @@ export default function App() {
       {hoja && (
         <HojaDetalle
           hoja={hoja}
+          esquema={esquema}
+          registros={registros}
+          perfil={perfil}
           onCerrar={() => setHoja(null)}
           onGuardar={valores => {
             if (hoja.modo === 'nuevo') registrar(hoja.tipo, valores);
@@ -683,9 +763,9 @@ export default function App() {
       )}
 
       <nav className="tabs">
-        {[['registrar', 'Registrar'], ['hoy', 'Hoy'], ['semana', 'Semana'], ['citas', 'Citas'], ['estudios', 'Estudios'], ['ajustes', 'Ajustes']].map(([id, txt]) => (
+        {[['registrar', 'Registrar'], ['hoy', 'Hoy'], ['semana', 'Semana'], ['citas', 'Citas'], ['vacunas', 'Vacunas'], ['estudios', 'Estudios'], ['ajustes', 'Ajustes']].map(([id, txt]) => (
           <button key={id} className={vista === id ? 'on' : ''} onClick={() => setVista(id)}>
-            <Icono tipo={{ registrar: 'registrar', hoy: 'reloj', semana: 'barras', citas: 'cita', estudios: 'documento', ajustes: 'ajustes' }[id]} s={21} />
+            <Icono tipo={{ registrar: 'registrar', hoy: 'reloj', semana: 'barras', citas: 'cita', vacunas: 'vacuna', estudios: 'documento', ajustes: 'ajustes' }[id]} s={21} />
             {txt}
           </button>
         ))}
@@ -1009,12 +1089,62 @@ function guardarEsquema(lista) {
   try { localStorage.setItem(ESQUEMA_LS, JSON.stringify(lista)); } catch { }
 }
 
-function PantallaCitas({ registros, perfil }) {
+// Medicación: se guarda en el celular igual que citas y esquema (no va a la
+// hoja de cálculo todavía). "dias" y "frecuenciaHoras" arman el calendario
+// de dosis; "tomasMed" es el registro de cada toma efectivamente marcada.
+const MEDS_LS = 'medicamentos_emma';
+const MEDS_TOMAS_LS = 'medicamentos_tomas_emma';
+function leerMedicamentos() {
+  try { return JSON.parse(localStorage.getItem(MEDS_LS) || '[]'); } catch { return []; }
+}
+function guardarMedicamentos(lista) {
+  try { localStorage.setItem(MEDS_LS, JSON.stringify(lista)); } catch { }
+}
+function leerTomasMed() {
+  try { return JSON.parse(localStorage.getItem(MEDS_TOMAS_LS) || '[]'); } catch { return []; }
+}
+function guardarTomasMed(lista) {
+  try { localStorage.setItem(MEDS_TOMAS_LS, JSON.stringify(lista)); } catch { }
+}
+
+// Une, para un mismo día del calendario, lo que hay que marcar: citas reales,
+// la fecha teórica de una dosis de vacuna vencida sin turno, y los días de
+// un tratamiento de medicación en curso. Un solo punto por día, con
+// prioridad cita > vacuna > medicación (lo más urgente/concreto primero).
+function marcaDia(dia, { citas, vacunas, medicamentos, nacimiento }) {
+  const enElDia = iso => new Date(iso).toDateString() === dia.toDateString();
+  if (citas.some(c => enElDia(c.iso))) {
+    return citas.some(c => enElDia(c.iso) && c.vacuna) ? 'vac' : 'cita';
+  }
+  const nac = fechaLocal(nacimiento);
+  if ((vacunas || []).some(v => v.atrasadaSinTurno && enElDia(new Date(nac.getFullYear(), nac.getMonth() + v.mes, nac.getDate())))) {
+    return 'alerta';
+  }
+  if ((medicamentos || []).some(m => {
+    const inicio = new Date(m.inicio), fin = new Date(inicio.getTime() + m.dias * 86400000);
+    return dia >= new Date(inicio.toDateString()) && dia <= fin;
+  })) {
+    return 'med';
+  }
+  return null;
+}
+
+function vacunasConEstado(esquema, registros, futuras, edadMeses) {
+  return (esquema || []).map(v => {
+    const puesta = (registros || []).find(r =>
+      r.tipo_evento === 'vacuna' && String(r.dosis || '').toLowerCase().includes(v.nombre.split(' ·')[0].toLowerCase()));
+    const turnoAgendado = futuras.some(c => c.vacunaId === v.id);
+    const atrasadaSinTurno = !puesta && !turnoAgendado && edadMeses >= v.mes;
+    return { ...v, edad: edadDosis(v.mes), puesta, turnoAgendado, atrasadaSinTurno };
+  });
+}
+
+function PantallaCitas({ registros, perfil, esquema, medicamentos, onVerVacunas }) {
   const [citas, setCitas] = useState(() => leerCitas().sort((a, b) => a.iso.localeCompare(b.iso)));
-  const [esquema, setEsquema] = useState(() => leerEsquema());
   const [mes, setMes] = useState(() => { const d = new Date(); return { a: d.getFullYear(), m: d.getMonth() }; });
   const [sel, setSel] = useState(null);
-  const [hoja, setHoja] = useState(null); // 'nueva' | 'esquema' | cita | {vacuna: true, ...prefill}
+  const [hoja, setHoja] = useState(null); // 'nueva' | cita | {prefillVacuna}
+  const [verHistorial, setVerHistorial] = useState(false);
 
   function persistir(lista) {
     const orden = [...lista].sort((a, b) => a.iso.localeCompare(b.iso));
@@ -1022,34 +1152,20 @@ function PantallaCitas({ registros, perfil }) {
     guardarCitas(orden);
   }
 
-  function persistirEsquema(lista) {
-    setEsquema(lista);
-    guardarEsquema(lista);
-  }
-
-  const futuras = citas.filter(c => new Date(c.iso) >= new Date(Date.now() - 6 * 3600000));
+  const corte = new Date(Date.now() - 6 * 3600000);
+  const futuras = citas.filter(c => new Date(c.iso) >= corte);
+  const pasadas = citas.filter(c => new Date(c.iso) < corte).slice().reverse();
   const proxima = futuras[0];
 
-  const edadMeses = mesesDeVida(perfil?.nacimiento || NACIMIENTO);
-
-  const vacunas = esquema.map(v => {
-    const puesta = (registros || []).find(r =>
-      r.tipo_evento === 'vacuna' && String(r.dosis || '').toLowerCase().includes(v.nombre.split(' ·')[0].toLowerCase()));
-    const turnoAgendado = futuras.some(c => c.vacunaId === v.id);
-    const atrasadaSinTurno = !puesta && !turnoAgendado && edadMeses >= v.mes;
-    return { ...v, edad: edadDosis(v.mes), puesta, turnoAgendado, atrasadaSinTurno };
-  });
+  const nacimiento = perfil?.nacimiento || NACIMIENTO;
+  const edadMeses = mesesDeVida(nacimiento);
+  const vacunas = vacunasConEstado(esquema, registros, futuras, edadMeses);
   const aplicadas = vacunas.filter(v => v.puesta).length;
+  const proximaVacuna = vacunas.find(v => !v.puesta);
 
   const primero = new Date(mes.a, mes.m, 1);
   const huecos = (primero.getDay() + 6) % 7;
   const largo = new Date(mes.a, mes.m + 1, 0).getDate();
-  const marcaDia = n => {
-    const dia = new Date(mes.a, mes.m, n).toDateString();
-    return citas.some(c => new Date(c.iso).toDateString() === dia)
-      ? (citas.some(c => new Date(c.iso).toDateString() === dia && c.vacuna) ? 'vac' : 'cita')
-      : null;
-  };
 
   const diasFalta = iso => Math.round((new Date(iso) - Date.now()) / 86400000);
 
@@ -1088,7 +1204,7 @@ function PantallaCitas({ registros, perfil }) {
           {Array.from({ length: huecos }).map((_, i) => <button key={'h' + i} className="off" disabled />)}
           {Array.from({ length: largo }).map((_, i) => {
             const n = i + 1;
-            const marca = marcaDia(n);
+            const marca = marcaDia(new Date(mes.a, mes.m, n), { citas, vacunas, medicamentos, nacimiento });
             return (
               <button key={n} className={sel === n ? 'sel' : ''} onClick={() => setSel(sel === n ? null : n)}>
                 {n}<span className={'pt' + (marca ? ' ' + marca : '')} />
@@ -1096,9 +1212,11 @@ function PantallaCitas({ registros, perfil }) {
             );
           })}
         </div>
-        <div style={{ display: 'flex', gap: 16, marginTop: 10 }}>
+        <div style={{ display: 'flex', gap: 16, marginTop: 10, flexWrap: 'wrap' }}>
           <span className="leyenda"><i className="cita" />Cita</span>
-          <span className="leyenda"><i className="vac" />Vacuna</span>
+          <span className="leyenda"><i className="vac" />Vacuna agendada</span>
+          <span className="leyenda"><i className="alerta" />Vacuna sin turno</span>
+          <span className="leyenda"><i className="med" />Medicación</span>
         </div>
 
         <div className="rotulo" style={{ margin: '26px 0 8px' }}>Lo que viene</div>
@@ -1126,42 +1244,60 @@ function PantallaCitas({ registros, perfil }) {
         </button>
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '26px 0 8px' }}>
-          <div className="rotulo">Calendario de vacunas</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ fontSize: 10, color: 'var(--n-500)' }}>{aplicadas} de {vacunas.length} aplicadas</div>
-            <button onClick={() => setHoja('esquema')} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 2 }} aria-label="Editar esquema de vacunas">
-              <Icono tipo="editar" s={15} />
+          <div className="rotulo">Historial</div>
+          {pasadas.length > 0 && (
+            <button onClick={() => setVerHistorial(v => !v)}
+                    style={{ border: 0, background: 'none', padding: 0, color: 'var(--accent-600)', fontSize: 10.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase' }}>
+              {verHistorial ? 'Ocultar' : 'Ver todo · ' + pasadas.length}
             </button>
-          </div>
+          )}
         </div>
         <hr className="regla" />
-        {vacunas.map(v => {
-          const contenido = (
-            <>
-              <Icono tipo="vacuna" s={20} />
-              <span>
-                <span style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>{v.nombre}</span>
-                <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--n-600)', marginTop: 7 }}>
-                  {v.edad}{v.atrasadaSinTurno ? ' · sin turno agendado' : ''}
+        {!pasadas.length && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Todavía no hay citas pasadas.</p>}
+        {(verHistorial ? pasadas : pasadas.slice(0, 3)).map(c => (
+          <button key={c.id} className="linea" onClick={() => setHoja(c)}>
+            <span className="hora" style={{ fontSize: 15 }}>
+              {dosD(new Date(c.iso).getDate())}
+              <span style={{ display: 'block', fontSize: 10, fontWeight: 500, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--n-500)', marginTop: 5 }}>
+                {MESES[new Date(c.iso).getMonth()]}
+              </span>
+            </span>
+            <span className="cuerpo">
+              <span style={{ flex: 1 }}>
+                <span style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>{c.titulo}</span>
+                <span style={{ display: 'block', fontSize: 10.5, fontWeight: 500, color: 'var(--n-600)', marginTop: 6 }}>
+                  {c.indicaciones ? 'Con indicaciones' : (c.lugar || 'Sin lugar')}
                 </span>
               </span>
-              {v.puesta
-                ? <span className="d">{new Date(v.puesta.iso || v.puesta.timestamp).toLocaleDateString('es', { day: 'numeric', month: 'short' })}</span>
-                : <span className={'p' + (v.atrasadaSinTurno ? ' urgente' : '')}>{v.atrasadaSinTurno ? 'Agendar' : 'Pendiente'}</span>}
-            </>
-          );
-          return v.atrasadaSinTurno ? (
-            <button key={v.id} className="vac" style={{ width: '100%', border: 0, background: 'none', textAlign: 'left' }}
-                    onClick={() => setHoja({ prefillVacuna: v })}>
-              {contenido}
-            </button>
-          ) : (
-            <div key={v.id} className={'vac' + (v.puesta ? ' hecha' : '')}>{contenido}</div>
-          );
-        })}
+            </span>
+          </button>
+        ))}
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '26px 0 8px' }}>
+          <div className="rotulo">Vacunas</div>
+          <div style={{ fontSize: 10, color: 'var(--n-500)' }}>{aplicadas} de {vacunas.length} aplicadas</div>
+        </div>
+        <hr className="regla" />
+        <button className="linea" onClick={onVerVacunas}>
+          <span className="cuerpo">
+            <span style={{ flex: 1 }}>
+              {proximaVacuna ? (
+                <>
+                  <span style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>{proximaVacuna.nombre}</span>
+                  <span style={{ display: 'block', fontSize: 10.5, fontWeight: 500, color: 'var(--n-600)', marginTop: 6 }}>
+                    {proximaVacuna.edad}{proximaVacuna.atrasadaSinTurno ? ' · sin turno agendado' : ' · próxima'}
+                  </span>
+                </>
+              ) : (
+                <span style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>Esquema completo</span>
+              )}
+            </span>
+            <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--accent-600)' }}>Ver todas</span>
+          </span>
+        </button>
       </div>
 
-      {hoja && hoja !== 'esquema' && (
+      {hoja && (
         <HojaCita
           cita={hoja && hoja.prefillVacuna ? null : (hoja === 'nueva' ? null : hoja)}
           prefillVacuna={hoja && hoja.prefillVacuna}
@@ -1169,9 +1305,6 @@ function PantallaCitas({ registros, perfil }) {
           onGuardar={c => { persistir((hoja === 'nueva' || hoja.prefillVacuna) ? [...citas, c] : citas.map(x => x.id === c.id ? c : x)); setHoja(null); }}
           onBorrar={id => { persistir(citas.filter(x => x.id !== id)); setHoja(null); }}
         />
-      )}
-      {hoja === 'esquema' && (
-        <HojaEsquema esquema={esquema} onGuardar={persistirEsquema} onCerrar={() => setHoja(null)} />
       )}
     </section>
   );
@@ -1182,9 +1315,11 @@ function HojaCita({ cita, prefillVacuna, onCerrar, onGuardar, onBorrar }) {
   const [cuando, setCuando] = useState(cita ? aLocal(new Date(cita.iso)) : aLocal(new Date()));
   const [lugar, setLugar] = useState(cita ? cita.lugar || '' : '');
   const [nota, setNota] = useState(cita ? cita.nota || '' : '');
+  const [indicaciones, setIndicaciones] = useState(cita ? cita.indicaciones || '' : '');
   const [aviso, setAviso] = useState(cita ? cita.aviso || '1 día antes' : '1 día antes');
   const [vacuna, setVacuna] = useState(cita ? !!cita.vacuna : !!prefillVacuna);
   const vacunaId = cita ? cita.vacunaId : (prefillVacuna ? prefillVacuna.id : null);
+  const yaFue = cita && new Date(cita.iso) < new Date();
 
   return (
     <>
@@ -1227,17 +1362,251 @@ function HojaCita({ cita, prefillVacuna, onCerrar, onGuardar, onBorrar }) {
             ))}
           </div>
         </div>
-        <div className="campo" style={{ borderBottom: 0 }}>
+        <div className="campo">
           <span className="rotulo">Nota</span>
           <textarea className="entrada-texto" rows={3} placeholder="Opcional · ej. preguntar por el reflujo" value={nota} onChange={e => setNota(e.target.value)} />
+        </div>
+        <div className="campo" style={{ borderBottom: 0 }}>
+          <span className="rotulo">Indicaciones{yaFue ? '' : ' · después de la consulta'}</span>
+          <textarea className="entrada-texto" rows={3} placeholder="Qué dijo el pediatra, próximos pasos…"
+                    value={indicaciones} onChange={e => setIndicaciones(e.target.value)} />
         </div>
         <div className="acciones">
           <button onClick={() => (cita ? onBorrar(cita.id) : onCerrar())}>{cita ? 'Borrar' : 'Cancelar'}</button>
           <button className="guardar" disabled={!titulo.trim()}
                   onClick={() => onGuardar({
                     id: cita ? cita.id : 'c' + Date.now(),
-                    titulo: titulo.trim(), iso: deLocalISO(cuando), lugar, nota, aviso, vacuna,
+                    titulo: titulo.trim(), iso: deLocalISO(cuando), lugar, nota, indicaciones, aviso, vacuna,
                     vacunaId: vacuna ? vacunaId : null,
+                  })}>
+            Guardar
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// Agrupa las dosis del esquema por vacuna base (quita el "· 1ª"/"· 2ª" del
+// nombre) para poder mostrar el progreso de la serie con estrellitas.
+function agruparVacunas(vacunas) {
+  const grupos = [];
+  const porNombre = new Map();
+  vacunas.forEach(v => {
+    const base = v.nombre.replace(/\s*·\s*\d+ª\s*$/, '');
+    if (!porNombre.has(base)) { porNombre.set(base, { base, dosis: [] }); grupos.push(porNombre.get(base)); }
+    porNombre.get(base).dosis.push(v);
+  });
+  return grupos;
+}
+
+function PantallaVacunas({ registros, perfil, esquema, onEsquemaChange, medicamentos, onMedicamentosChange, tomasMed, onRegistrarToma }) {
+  const [mes, setMes] = useState(() => { const d = new Date(); return { a: d.getFullYear(), m: d.getMonth() }; });
+  const [sel, setSel] = useState(null);
+  const [hoja, setHoja] = useState(null); // 'esquema' | 'medNueva' | medicamento | {prefillVacuna}
+  const [citas, setCitas] = useState(() => leerCitas());
+
+  const nacimiento = perfil?.nacimiento || NACIMIENTO;
+  const edadMeses = mesesDeVida(nacimiento);
+  const futuras = citas.filter(c => new Date(c.iso) >= new Date(Date.now() - 6 * 3600000));
+  const vacunas = vacunasConEstado(esquema, registros, futuras, edadMeses);
+  const aplicadas = vacunas.filter(v => v.puesta).length;
+  const grupos = agruparVacunas(vacunas);
+
+  const primero = new Date(mes.a, mes.m, 1);
+  const huecos = (primero.getDay() + 6) % 7;
+  const largo = new Date(mes.a, mes.m + 1, 0).getDate();
+
+  return (
+    <section className="pantalla pad" style={{ paddingTop: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+        <div className="rotulo">{new Date(mes.a, mes.m, 1).toLocaleDateString('es', { month: 'long', year: 'numeric' })}</div>
+        <div style={{ display: 'flex', gap: 14 }}>
+          <button onClick={() => setMes(m => ({ a: m.m ? m.a : m.a - 1, m: m.m ? m.m - 1 : 11 }))}
+                  style={{ border: 0, background: 'none', padding: 0, fontSize: 13, fontWeight: 800, color: 'var(--text)' }} aria-label="Mes anterior">←</button>
+          <button onClick={() => setMes(m => ({ a: m.m === 11 ? m.a + 1 : m.a, m: m.m === 11 ? 0 : m.m + 1 }))}
+                  style={{ border: 0, background: 'none', padding: 0, fontSize: 13, fontWeight: 800, color: 'var(--text)' }} aria-label="Mes siguiente">→</button>
+        </div>
+      </div>
+      <div className="semanas">{DIAS_SEMANA.map(d => <span key={d}>{d}</span>)}</div>
+      <div className="cal">
+        {Array.from({ length: huecos }).map((_, i) => <button key={'h' + i} className="off" disabled />)}
+        {Array.from({ length: largo }).map((_, i) => {
+          const n = i + 1;
+          const marca = marcaDia(new Date(mes.a, mes.m, n), { citas, vacunas, medicamentos, nacimiento });
+          return (
+            <button key={n} className={sel === n ? 'sel' : ''} onClick={() => setSel(sel === n ? null : n)}>
+              {n}<span className={'pt' + (marca ? ' ' + marca : '')} />
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', gap: 16, marginTop: 10, flexWrap: 'wrap' }}>
+        <span className="leyenda"><i className="cita" />Cita</span>
+        <span className="leyenda"><i className="vac" />Vacuna agendada</span>
+        <span className="leyenda"><i className="alerta" />Vacuna sin turno</span>
+        <span className="leyenda"><i className="med" />Medicación</span>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '26px 0 8px' }}>
+        <div className="rotulo">Esquema de vacunación</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ fontSize: 10, color: 'var(--n-500)' }}>{aplicadas} de {vacunas.length} aplicadas</div>
+          <button onClick={() => setHoja('esquema')} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 2 }} aria-label="Editar esquema de vacunas">
+            <Icono tipo="editar" s={15} />
+          </button>
+        </div>
+      </div>
+      <hr className="regla" />
+      {grupos.map(g => (
+        <div key={g.base} style={{ padding: '13px 0', borderBottom: '1px solid var(--n-300)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: 14, fontWeight: 600 }}>{g.base}</span>
+            {g.dosis.length > 1 && (
+              <span className="estrellas" aria-label={g.dosis.filter(v => v.puesta).length + ' de ' + g.dosis.length + ' dosis'}>
+                {g.dosis.map((v, i) => (
+                  <Icono key={i} tipo={v.puesta ? 'estrellaLlena' : 'estrellaVacia'} s={14} />
+                ))}
+              </span>
+            )}
+          </div>
+          {g.dosis.map(v => (
+            v.atrasadaSinTurno ? (
+              <button key={v.id} className="vac" style={{ width: '100%', border: 0, background: 'none', textAlign: 'left' }}
+                      onClick={() => setHoja({ prefillVacuna: v })}>
+                <Icono tipo="vacuna" s={20} />
+                <span>
+                  <span style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>{g.dosis.length > 1 ? v.nombre.split(' · ').pop() : v.edad}</span>
+                  <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--n-600)', marginTop: 4 }}>{v.edad} · sin turno agendado</span>
+                </span>
+                <span className="p urgente">Agendar</span>
+              </button>
+            ) : (
+              <div key={v.id} className={'vac' + (v.puesta ? ' hecha' : '')}>
+                <Icono tipo="vacuna" s={20} />
+                <span>
+                  <span style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>{g.dosis.length > 1 ? v.nombre.split(' · ').pop() : v.edad}</span>
+                  {g.dosis.length > 1 && <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--n-600)', marginTop: 4 }}>{v.edad}</span>}
+                </span>
+                {v.puesta
+                  ? <span className="d">{new Date(v.puesta.iso || v.puesta.timestamp).toLocaleDateString('es', { day: 'numeric', month: 'short' })}</span>
+                  : <span className="p">Pendiente</span>}
+              </div>
+            )
+          ))}
+        </div>
+      ))}
+      {!grupos.length && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>No hay dosis en el esquema.</p>}
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '26px 0 8px' }}>
+        <div className="rotulo">Medicación</div>
+      </div>
+      <hr className="regla" />
+      {medicamentos.map(m => {
+        const fin = new Date(new Date(m.inicio).getTime() + m.dias * 86400000);
+        const vigente = Date.now() <= fin.getTime();
+        const tomasDelMed = tomasMed.filter(t => t.medId === m.id).length;
+        return (
+          <div key={m.id} className="med-item">
+            <Icono tipo="medicamento" s={20} />
+            <span style={{ flex: 1 }}>
+              <span style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>{m.nombre}</span>
+              <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--n-600)', marginTop: 4 }}>
+                Cada {m.frecuenciaHoras} h · {m.dias} días · {tomasDelMed} {tomasDelMed === 1 ? 'toma' : 'tomas'}{!vigente ? ' · terminado' : ''}
+              </span>
+            </span>
+            {vigente && (
+              <button className="btn btn-secundario" style={{ width: 'auto', padding: '8px 12px', fontSize: 10.5 }}
+                      onClick={() => onRegistrarToma(m.id)}>
+                Tomé ahora
+              </button>
+            )}
+            <button onClick={() => setHoja(m)} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label={'Editar ' + m.nombre}>
+              <Icono tipo="editar" s={15} />
+            </button>
+          </div>
+        );
+      })}
+      {!medicamentos.length && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>No hay medicación en curso.</p>}
+      <button className="btn btn-secundario" style={{ marginTop: 14 }} onClick={() => setHoja('medNueva')}>
+        <Icono tipo="mas" s={16} /> Agregar medicación
+      </button>
+
+      {hoja === 'esquema' && (
+        <HojaEsquema esquema={esquema} onGuardar={onEsquemaChange} onCerrar={() => setHoja(null)} />
+      )}
+      {(hoja === 'medNueva' || (hoja && hoja.id && hoja.dias !== undefined)) && (
+        <HojaMedicamento
+          medicamento={hoja === 'medNueva' ? null : hoja}
+          onCerrar={() => setHoja(null)}
+          onGuardar={m => {
+            onMedicamentosChange(hoja === 'medNueva' ? [...medicamentos, m] : medicamentos.map(x => x.id === m.id ? m : x));
+            setHoja(null);
+          }}
+          onBorrar={id => { onMedicamentosChange(medicamentos.filter(x => x.id !== id)); setHoja(null); }}
+        />
+      )}
+      {hoja && hoja.prefillVacuna && (
+        <HojaCita
+          cita={null}
+          prefillVacuna={hoja.prefillVacuna}
+          onCerrar={() => setHoja(null)}
+          onGuardar={c => {
+            const lista = [...citas, c];
+            setCitas(lista);
+            guardarCitas(lista);
+            setHoja(null);
+          }}
+          onBorrar={() => setHoja(null)}
+        />
+      )}
+    </section>
+  );
+}
+
+function HojaMedicamento({ medicamento, onCerrar, onGuardar, onBorrar }) {
+  const [nombre, setNombre] = useState(medicamento ? medicamento.nombre : '');
+  const [dias, setDias] = useState(medicamento ? String(medicamento.dias) : '7');
+  const [frecuenciaHoras, setFrecuenciaHoras] = useState(medicamento ? String(medicamento.frecuenciaHoras) : '8');
+  const [inicio, setInicio] = useState(aLocal(medicamento ? new Date(medicamento.inicio) : new Date()));
+
+  return (
+    <>
+      <div className="fondo" onClick={onCerrar} />
+      <div className="hoja" role="dialog" aria-label="Medicación">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+          <div>
+            <div className="kicker">{medicamento ? 'Editar' : 'Nueva'}</div>
+            <h2 style={{ textTransform: 'none' }}>{medicamento ? medicamento.nombre : 'Medicación'}</h2>
+          </div>
+          <button onClick={onCerrar} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Cerrar">
+            <Icono tipo="cerrar" s={22} />
+          </button>
+        </div>
+        <hr className="regla" style={{ margin: '16px 0 0' }} />
+        <div className="campo">
+          <span className="rotulo">Medicamento</span>
+          <input className="entrada-texto" placeholder="ej. Amoxicilina" value={nombre} onChange={e => setNombre(e.target.value)} />
+        </div>
+        <div className="campo">
+          <span className="rotulo">Empieza</span>
+          <input className="entrada-texto" type="datetime-local" value={inicio} onChange={e => setInicio(e.target.value)} />
+        </div>
+        <div className="campo">
+          <span className="rotulo">Cantidad de días</span>
+          <input className="entrada-texto" inputMode="numeric" value={dias} onChange={e => setDias(e.target.value)} />
+        </div>
+        <div className="campo" style={{ borderBottom: 0 }}>
+          <span className="rotulo">Cada cuántas horas</span>
+          <input className="entrada-texto" inputMode="numeric" value={frecuenciaHoras} onChange={e => setFrecuenciaHoras(e.target.value)} />
+        </div>
+        <div className="acciones">
+          <button onClick={() => (medicamento ? onBorrar(medicamento.id) : onCerrar())}>{medicamento ? 'Borrar' : 'Cancelar'}</button>
+          <button className="guardar" disabled={!nombre.trim() || !Number(dias) || !Number(frecuenciaHoras)}
+                  onClick={() => onGuardar({
+                    id: medicamento ? medicamento.id : 'm' + Date.now(),
+                    nombre: nombre.trim(), dias: Number(dias), frecuenciaHoras: Number(frecuenciaHoras),
+                    inicio: deLocalISO(inicio),
                   })}>
             Guardar
           </button>
@@ -1337,7 +1706,7 @@ function EditarInicioSheet({ valorInicial, onCerrar, onGuardar }) {
   );
 }
 
-function HojaDetalle({ hoja, onCerrar, onGuardar, onBorrar, onReanudar }) {
+function HojaDetalle({ hoja, esquema, registros, perfil, onCerrar, onGuardar, onBorrar, onReanudar }) {
   const campos = DETALLE[hoja.tipo] || [];
   const [valores, setValores] = useState(() => {
     const v = {};
@@ -1346,7 +1715,19 @@ function HojaDetalle({ hoja, onCerrar, onGuardar, onBorrar, onReanudar }) {
     return v;
   });
   const [hora, setHora] = useState(() => aLocal(hoja.modo === 'editar' ? fecha(hoja.valores) : new Date()));
+  const [otraVacuna, setOtraVacuna] = useState(false);
   const set = (campo, valor) => setValores(v => ({ ...v, [campo]: v[campo] === valor ? '' : valor }));
+
+  // Al registrar una vacuna, se elige de las dosis del esquema que todavía no
+  // se aplicaron: así la app sabe sola si es "1ª" o "2ª" según lo que ya
+  // esté cargado, en vez de tener que escribirlo a mano.
+  const opcionesVacuna = useMemo(() => {
+    if (hoja.tipo !== 'vacuna') return [];
+    const edadMeses = mesesDeVida(perfil?.nacimiento || NACIMIENTO);
+    return vacunasConEstado(esquema || [], registros || [], [], edadMeses)
+      .filter(v => !v.puesta)
+      .map(v => v.nombre);
+  }, [hoja.tipo, esquema, registros, perfil]);
 
   return (
     <>
@@ -1374,7 +1755,24 @@ function HojaDetalle({ hoja, onCerrar, onGuardar, onBorrar, onReanudar }) {
         {campos.map(c => (
           <div className="campo" key={c.campo}>
             <span className="rotulo">{c.label}</span>
-            {c.libre ? (
+            {hoja.tipo === 'vacuna' && c.campo === 'dosis' ? (
+              <>
+                <div className="opciones" style={{ flexWrap: 'wrap' }}>
+                  {opcionesVacuna.map(o => (
+                    <button key={o} className={valores.dosis === o ? 'on' : ''}
+                            onClick={() => { set('dosis', o); setOtraVacuna(false); }}>{o}</button>
+                  ))}
+                  <button className={otraVacuna ? 'on' : ''} onClick={() => setOtraVacuna(x => !x)}>Otra…</button>
+                </div>
+                {(otraVacuna || (valores.dosis && !opcionesVacuna.includes(valores.dosis))) && (
+                  <input className="entrada-texto" style={{ marginTop: 8 }} placeholder="Nombre de la vacuna"
+                         value={valores.dosis || ''} onChange={e => setValores(v => ({ ...v, dosis: e.target.value }))} />
+                )}
+                {!opcionesVacuna.length && !otraVacuna && !valores.dosis && (
+                  <p style={{ fontSize: 11, color: 'var(--n-600)', marginTop: 8 }}>No quedan dosis pendientes en el esquema.</p>
+                )}
+              </>
+            ) : c.libre ? (
               <input className="entrada-texto" inputMode={c.numerico ? 'decimal' : 'text'} placeholder={c.label}
                      value={valores[c.campo] || ''} onChange={e => set(c.campo, e.target.value)} />
             ) : (
