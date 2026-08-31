@@ -34,6 +34,16 @@ export function consultar(action, extra = '') {
   return conTimeout(URL_APP + '?action=' + action + extra).catch(() => ({ ok: false, offline: true }));
 }
 
+// Sube un archivo (estudio). Sin cola offline: si falla, se avisa y se reintenta a mano.
+export function subirArchivo({ nombre, tipo, datos, descripcion }) {
+  const payload = {
+    accion: 'subir_archivo', nombre, tipo, datos, descripcion,
+    cliente_hora: new Date().toISOString(),
+  };
+  return conTimeout(URL_APP, { method: 'POST', body: JSON.stringify(payload) }, 25000)
+    .catch(() => ({ ok: false, mensaje: 'Sin conexión' }));
+}
+
 // Envía la cola de a uno, en orden.
 export function vaciarCola(alTerminar) {
   const cola = leerCola();

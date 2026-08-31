@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { consultar, llamar, leerCola, vaciarCola } from './api.js';
+import { consultar, llamar, leerCola, vaciarCola, subirArchivo } from './api.js';
 import { Icono, Marca } from './icons.jsx';
 
 const NACIMIENTO = '2026-04-19';          // ajustar en Ajustes → perfil
 const PULSACION_LARGA = 420;              // ms
+const UMBRAL_TETA_MS = 3 * 60 * 60 * 1000; // aviso "alimente" tras 3 h sin teta
 
 const RAPIDOS = [
   { tipo: 'pis' }, { tipo: 'caca' }, { tipo: 'pañal' },
-  { tipo: 'baño' }, { tipo: 'vitamina', etiqueta: 'Vit. D' }, { tipo: 'peso' },
+  { tipo: 'baño' }, { tipo: 'vacuna' }, { tipo: 'peso' },
 ];
 
 // Campos opcionales de la hoja de detalle, por tipo de evento.
@@ -27,10 +28,10 @@ const DETALLE = {
     { campo: 'crema', label: 'Crema', ops: ['sí', 'no'] },
   ],
   'baño': [{ campo: 'duracion_minutos', label: 'Duración', ops: ['5', '10', '15'] }],
-  vitamina: [{ campo: 'dosis', label: 'Dosis', ops: ['400 UI', '800 UI'] }],
+  vacuna: [{ campo: 'dosis', label: 'Vacuna', ops: [], libre: true }],
   peso: [
-    { campo: 'peso_kg', label: 'Peso (kg)', ops: [], libre: true },
-    { campo: 'talla_cm', label: 'Talla (cm)', ops: [], libre: true },
+    { campo: 'peso_kg', label: 'Peso (kg)', ops: [], libre: true, numerico: true },
+    { campo: 'talla_cm', label: 'Talla (cm)', ops: [], libre: true, numerico: true },
   ],
 };
 
@@ -55,6 +56,13 @@ function edad(iso) {
 
 const fecha = r => new Date(r.iso || r.timestamp);
 
+// datetime-local usa hora local sin zona horaria; convertimos en ambos sentidos.
+function aLocal(d) {
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+const deLocalISO = s => new Date(s).toISOString();
+
 function resumen(r) {
   const partes = [];
   if (r.lado) partes.push(r.lado);
@@ -77,14 +85,31 @@ export default function App() {
   const [hoja, setHoja] = useState(null);            // {tipo, modo:'nuevo'|'editar', fila, valores}
   const [aviso, setAviso] = useState(null);
   const [semana, setSemana] = useState(null);
+  const [estudios, setEstudios] = useState(null);
+  const [perfil, setPerfil] = useState({ nombre: 'Emma', nacimiento: NACIMIENTO });
+  const [avisoTeta, setAvisoTeta] = useState(false);
+  const [notifPermiso, setNotifPermiso] = useState(
+    typeof Notification !== 'undefined' ? Notification.permission : 'no-disponible'
+  );
   const pulsacion = useRef(null);
   const sostenido = useRef(false);
+  const avisadoRef = useRef(false);
+  const perfilCargado = useRef(false); // sólo se toma del servidor una vez, para no pisar una edición en curso
+
+  const ultimaTeta = useMemo(() => {
+    const r = registros.find(x => x.tipo_evento === 'teta');
+    return r ? fecha(r) : null;
+  }, [registros]);
 
   const refrescar = useCallback(() => {
     consultar('inicial').then(res => {
       if (!res.ok) return;
       setRegistros(res.registros || []);
       setEstado(res.estado && res.estado.activo ? res.estado : null);
+      if (res.perfil && !perfilCargado.current) {
+        setPerfil(res.perfil);
+        perfilCargado.current = true;
+      }
     });
   }, []);
 
@@ -107,6 +132,31 @@ export default function App() {
   useEffect(() => {
     if (vista === 'semana' && !semana) consultar('semana').then(r => r.ok && setSemana(r));
   }, [vista, semana]);
+
+  const cargarEstudios = useCallback(() => {
+    consultar('estudios').then(r => r.ok && setEstudios(r.registros || []));
+  }, []);
+
+  useEffect(() => {
+    if (vista === 'estudios' && !estudios) cargarEstudios();
+  }, [vista, estudios, cargarEstudios]);
+
+  // Aviso "Alimente al ácaro" 3 h después de la última toma.
+  useEffect(() => {
+    avisadoRef.current = false;
+    setAvisoTeta(false);
+  }, [ultimaTeta ? ultimaTeta.getTime() : null]);
+
+  useEffect(() => {
+    if (!ultimaTeta || avisadoRef.current) return;
+    if (ahora - ultimaTeta.getTime() >= UMBRAL_TETA_MS) {
+      avisadoRef.current = true;
+      setAvisoTeta(true);
+      if (notifPermiso === 'granted') {
+        try { new Notification('Alimente al ácaro', { body: 'Pasaron 3 horas desde la última toma.' }); } catch {}
+      }
+    }
+  }, [ahora, ultimaTeta, notifPermiso]);
 
   function notificar(texto, deshacer) {
     setAviso({ texto, deshacer });
@@ -169,22 +219,30 @@ export default function App() {
     return r ? 'Hace ' + hace(fecha(r)) : 'Sin registros';
   };
 
+  // Los "estudios" tienen su propia pestaña; no se mezclan con el feed diario.
+  const registrosDiarios = useMemo(() => registros.filter(r => r.tipo_evento !== 'estudio'), [registros]);
+
   const delDia = useMemo(() => {
     const hoy = new Date().toDateString();
-    return registros.filter(r => fecha(r).toDateString() === hoy);
-  }, [registros]);
+    return registrosDiarios.filter(r => fecha(r).toDateString() === hoy);
+  }, [registrosDiarios]);
 
   return (
     <div className="app">
       <header className="cab">
         <div>
-          <h1>Emma</h1>
-          <div className="edad">{edad(NACIMIENTO)}</div>
+          <h1>{perfil.nombre}</h1>
+          <div className="edad">{edad(perfil.nacimiento)}</div>
         </div>
         <Marca s={30} color="var(--accent)" />
       </header>
       {pendientes > 0 && (
         <div className="cola">{pendientes} {pendientes === 1 ? 'registro pendiente' : 'registros pendientes'} de enviar</div>
+      )}
+      {avisoTeta && (
+        <button className="cola alerta" onClick={() => setAvisoTeta(false)}>
+          Alimente al ácaro · última toma hace {hace(ultimaTeta)}
+        </button>
       )}
 
       {vista === 'registrar' && (
@@ -241,7 +299,7 @@ export default function App() {
               </button>
             </div>
             <hr className="regla" />
-            {registros.slice(0, 6).map(r => (
+            {registrosDiarios.slice(0, 6).map(r => (
               <button key={r.fila} className="entrada"
                       onClick={() => setHoja({ tipo: r.tipo_evento, modo: 'editar', fila: r.fila, valores: r })}>
                 <Icono tipo={r.tipo_evento} s={20} />
@@ -252,7 +310,7 @@ export default function App() {
                 <span className="h">{hace(fecha(r))}<span>{reloj(fecha(r))}</span></span>
               </button>
             ))}
-            {!registros.length && <p style={{ color: 'var(--n-600)', fontSize: 13 }}>Sin registros todavía.</p>}
+            {!registrosDiarios.length && <p style={{ color: 'var(--n-600)', fontSize: 13 }}>Sin registros todavía.</p>}
           </div>
         </section>
       )}
@@ -328,6 +386,16 @@ export default function App() {
         </section>
       )}
 
+      {vista === 'estudios' && (
+        <PantallaEstudios
+          estudios={estudios}
+          onSubido={() => { setEstudios(null); cargarEstudios(); }}
+          onBorrar={fila => {
+            llamar({ accion: 'eliminar', fila }).then(() => { setEstudios(null); cargarEstudios(); });
+          }}
+        />
+      )}
+
       {vista === 'ajustes' && (
         <section className="pantalla pad" style={{ paddingTop: 14 }}>
           <div style={{ display: 'flex', gap: 14, alignItems: 'center', paddingBottom: 16, borderBottom: '2px solid var(--divider)' }}>
@@ -335,10 +403,27 @@ export default function App() {
               <Marca s={38} color="var(--bg)" />
             </div>
             <div>
-              <div style={{ fontSize: 22, fontWeight: 800, lineHeight: 1 }}>Emma</div>
-              <div style={{ fontSize: 11.5, color: 'var(--n-600)', marginTop: 5 }}>{edad(NACIMIENTO)}</div>
+              <div style={{ fontSize: 22, fontWeight: 800, lineHeight: 1 }}>{perfil.nombre}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--n-600)', marginTop: 5 }}>{edad(perfil.nacimiento)}</div>
             </div>
           </div>
+
+          <div className="rotulo" style={{ margin: '20px 0 8px' }}>Editar datos</div>
+          <hr className="regla" />
+          <div className="campo">
+            <span className="rotulo">Nombre</span>
+            <input className="entrada-texto" value={perfil.nombre}
+                   onChange={e => setPerfil(p => ({ ...p, nombre: e.target.value }))} />
+          </div>
+          <div className="campo">
+            <span className="rotulo">Fecha de nacimiento</span>
+            <input className="entrada-texto" type="date" value={perfil.nacimiento}
+                   onChange={e => setPerfil(p => ({ ...p, nacimiento: e.target.value }))} />
+          </div>
+          <button className="btn btn-primario" style={{ marginTop: 4 }}
+                  onClick={() => llamar({ accion: 'perfil', ...perfil }).then(() => notificar('Datos guardados'))}>
+            Guardar datos
+          </button>
 
           <div className="rotulo" style={{ margin: '20px 0 8px' }}>Datos</div>
           <hr className="regla" />
@@ -351,17 +436,32 @@ export default function App() {
           <button className="btn btn-secundario" style={{ marginTop: 12 }} onClick={() => { vaciarCola(setPendientes); refrescar(); }}>
             Volver a sincronizar
           </button>
+
+          <div className="rotulo" style={{ margin: '20px 0 8px' }}>Recordatorios</div>
+          <hr className="regla" />
+          <div style={{ padding: '12px 0', borderBottom: '1px solid var(--n-300)', fontSize: 13.5 }}>
+            Aviso "Alimente al ácaro" 3 h después de la última toma ·{' '}
+            {notifPermiso === 'granted' ? 'activado'
+              : notifPermiso === 'no-disponible' ? 'no disponible en este navegador'
+              : 'desactivado'}
+          </div>
+          {notifPermiso !== 'granted' && notifPermiso !== 'no-disponible' && (
+            <button className="btn btn-secundario" style={{ marginTop: 12 }}
+                    onClick={() => Notification.requestPermission().then(setNotifPermiso)}>
+              Activar avisos
+            </button>
+          )}
         </section>
       )}
 
       {/* Resumen impreso: sólo visible al imprimir */}
       <div className="impreso">
-        <h1>Emma · resumen</h1>
-        <p>{edad(NACIMIENTO)} — generado el {new Date().toLocaleDateString('es')}</p>
+        <h1>{perfil.nombre} · resumen</h1>
+        <p>{edad(perfil.nacimiento)} — generado el {new Date().toLocaleDateString('es')}</p>
         <table>
           <thead><tr><th>Fecha</th><th>Hora</th><th>Evento</th><th>Detalle</th></tr></thead>
           <tbody>
-            {registros.slice(0, 80).map(r => (
+            {registrosDiarios.slice(0, 80).map(r => (
               <tr key={r.fila}>
                 <td>{fecha(r).toLocaleDateString('es')}</td>
                 <td>{reloj(fecha(r))}</td>
@@ -399,14 +499,94 @@ export default function App() {
       )}
 
       <nav className="tabs">
-        {[['registrar', 'Registrar'], ['hoy', 'Hoy'], ['semana', 'Semana'], ['ajustes', 'Ajustes']].map(([id, txt]) => (
+        {[['registrar', 'Registrar'], ['hoy', 'Hoy'], ['semana', 'Semana'], ['estudios', 'Estudios'], ['ajustes', 'Ajustes']].map(([id, txt]) => (
           <button key={id} className={vista === id ? 'on' : ''} onClick={() => setVista(id)}>
-            <Icono tipo={{ registrar: 'registrar', hoy: 'reloj', semana: 'barras', ajustes: 'ajustes' }[id]} s={21} />
+            <Icono tipo={{ registrar: 'registrar', hoy: 'reloj', semana: 'barras', estudios: 'documento', ajustes: 'ajustes' }[id]} s={21} />
             {txt}
           </button>
         ))}
       </nav>
     </div>
+  );
+}
+
+const MAX_BYTES_ARCHIVO = 15 * 1024 * 1024;
+
+function PantallaEstudios({ estudios, onSubido, onBorrar }) {
+  const [archivo, setArchivo] = useState(null);
+  const [descripcion, setDescripcion] = useState('');
+  const [subiendo, setSubiendo] = useState(false);
+  const [error, setError] = useState('');
+  const inputRef = useRef(null);
+
+  function elegirArchivo(e) {
+    const f = e.target.files[0] || null;
+    setError('');
+    if (f && f.size > MAX_BYTES_ARCHIVO) {
+      setError('Archivo muy grande (máx. 15 MB).');
+      setArchivo(null);
+      if (inputRef.current) inputRef.current.value = '';
+      return;
+    }
+    setArchivo(f);
+  }
+
+  function subir() {
+    if (!archivo) return;
+    setSubiendo(true);
+    setError('');
+    const lector = new FileReader();
+    lector.onload = () => {
+      const base64 = String(lector.result).split(',')[1] || '';
+      subirArchivo({ nombre: archivo.name, tipo: archivo.type, datos: base64, descripcion }).then(res => {
+        setSubiendo(false);
+        if (res.ok) {
+          setArchivo(null);
+          setDescripcion('');
+          if (inputRef.current) inputRef.current.value = '';
+          onSubido();
+        } else {
+          setError(res.mensaje || 'No se pudo subir. Probá de nuevo.');
+        }
+      });
+    };
+    lector.onerror = () => { setSubiendo(false); setError('No se pudo leer el archivo.'); };
+    lector.readAsDataURL(archivo);
+  }
+
+  return (
+    <section className="pantalla pad" style={{ paddingTop: 14 }}>
+      <div className="rotulo" style={{ marginBottom: 8 }}>Subir estudio</div>
+      <hr className="regla" style={{ marginBottom: 12 }} />
+      <div className="subida">
+        <Icono tipo="subir" s={26} />
+        <input ref={inputRef} type="file" accept="image/*,application/pdf" onChange={elegirArchivo} />
+        <input className="entrada-texto" placeholder="Descripción (opcional) · ej. Ecografía 20 semanas"
+               value={descripcion} onChange={e => setDescripcion(e.target.value)} style={{ marginTop: 6 }} />
+        {error && <div style={{ color: 'var(--accent)', fontSize: 12, fontWeight: 700 }}>{error}</div>}
+        <button className="btn btn-primario" style={{ marginTop: 8 }} disabled={!archivo || subiendo} onClick={subir}>
+          {subiendo ? 'Subiendo…' : 'Subir'}
+        </button>
+      </div>
+
+      <div className="rotulo" style={{ margin: '24px 0 8px' }}>Estudios guardados</div>
+      <hr className="regla" />
+      {estudios === null && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Cargando…</p>}
+      {estudios && !estudios.length && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Todavía no subiste nada.</p>}
+      {estudios && estudios.map(r => (
+        <div key={r.fila} className="archivo">
+          <Icono tipo="documento" s={20} />
+          <a href={r.archivo_url} target="_blank" rel="noreferrer">
+            <span className="t">{r.notas || r.archivo_nombre}</span>
+            <span className="s">{r.archivo_nombre}{r.iso ? ' · ' + new Date(r.iso).toLocaleDateString('es') : ''}</span>
+          </a>
+          <button onClick={() => onBorrar(r.fila)}
+                  style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Borrar">
+            <Icono tipo="cerrar" s={16} />
+          </button>
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -418,6 +598,7 @@ function HojaDetalle({ hoja, onCerrar, onGuardar, onBorrar }) {
     if (hoja.valores.notas) v.notas = hoja.valores.notas;
     return v;
   });
+  const [hora, setHora] = useState(() => aLocal(hoja.modo === 'editar' ? fecha(hoja.valores) : new Date()));
   const set = (campo, valor) => setValores(v => ({ ...v, [campo]: v[campo] === valor ? '' : valor }));
 
   return (
@@ -435,11 +616,19 @@ function HojaDetalle({ hoja, onCerrar, onGuardar, onBorrar }) {
         </div>
         <hr className="regla" style={{ margin: '16px 0 0' }} />
 
+        {hoja.modo === 'editar' && (
+          <div className="campo">
+            <span className="rotulo">Hora</span>
+            <input className="entrada-texto" type="datetime-local"
+                   value={hora} onChange={e => setHora(e.target.value)} />
+          </div>
+        )}
+
         {campos.map(c => (
           <div className="campo" key={c.campo}>
             <span className="rotulo">{c.label}</span>
             {c.libre ? (
-              <input className="entrada-texto" inputMode="decimal" placeholder={c.label}
+              <input className="entrada-texto" inputMode={c.numerico ? 'decimal' : 'text'} placeholder={c.label}
                      value={valores[c.campo] || ''} onChange={e => set(c.campo, e.target.value)} />
             ) : (
               <div className="opciones">
@@ -461,7 +650,10 @@ function HojaDetalle({ hoja, onCerrar, onGuardar, onBorrar }) {
           <button onClick={hoja.modo === 'editar' ? onBorrar : onCerrar}>
             {hoja.modo === 'editar' ? 'Borrar' : 'Cancelar'}
           </button>
-          <button className="guardar" onClick={() => onGuardar(valores)}>Guardar</button>
+          <button className="guardar"
+                  onClick={() => onGuardar(hoja.modo === 'editar' ? { ...valores, timestamp: deLocalISO(hora) } : valores)}>
+            Guardar
+          </button>
         </div>
       </div>
     </>

@@ -9,6 +9,11 @@
  *   timestamp · tipo_evento · duracion_minutos · notas          (ya existían)
  *   lado · cantidad_ml · contenido · consistencia · color ·
  *   crema · dosis · peso_kg · talla_cm · cliente_hora           (nuevas)
+ *   archivo_url · archivo_nombre                                (estudios/archivos)
+ *
+ * El perfil (nombre y fecha de nacimiento) y los archivos subidos ("estudios")
+ * viven aparte: el perfil en PropertiesService, los archivos en una carpeta de
+ * Drive ("Emma · estudios") con el link guardado en la fila del registro.
  *
  * Instalación: pegar en el editor de Apps Script del Sheet, guardar,
  * Implementar → Nueva implementación → Aplicación web → acceso "cualquiera".
@@ -19,7 +24,8 @@ var HOJA = 'registros';
 var COLUMNAS = [
   'timestamp', 'tipo_evento', 'duracion_minutos', 'notas',
   'lado', 'cantidad_ml', 'contenido', 'consistencia', 'color',
-  'crema', 'dosis', 'peso_kg', 'talla_cm', 'cliente_hora'
+  'crema', 'dosis', 'peso_kg', 'talla_cm', 'cliente_hora',
+  'archivo_url', 'archivo_nombre'
 ];
 
 function hoja_() {
@@ -68,6 +74,27 @@ function guardarEstado_(e) {
   PropertiesService.getScriptProperties().setProperty('estado', JSON.stringify(e));
 }
 
+function perfil_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('perfil');
+  return raw ? JSON.parse(raw) : { nombre: 'Emma', nacimiento: '2026-04-19' };
+}
+function guardarPerfil_(p) {
+  PropertiesService.getScriptProperties().setProperty('perfil', JSON.stringify(p));
+}
+
+// Carpeta de Drive donde se guardan los archivos subidos ("estudios").
+// Se crea una sola vez y se recuerda el id en las propiedades del script.
+function carpetaEstudios_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('carpeta_estudios');
+  if (id) {
+    try { return DriveApp.getFolderById(id); } catch (e) { /* la carpeta ya no existe, se crea de nuevo */ }
+  }
+  var carpeta = DriveApp.getRootFolder().createFolder('Emma · estudios');
+  props.setProperty('carpeta_estudios', carpeta.getId());
+  return carpeta;
+}
+
 function escribir_(datos) {
   var h = hoja_(), sh = h.sh, cols = h.cols;
   var fila = new Array(cols.length).fill('');
@@ -102,7 +129,9 @@ function doPost(e) {
     if (b.accion === 'corregir') {
       var h = hoja_(), sh = h.sh, cols = h.cols;
       COLUMNAS.forEach(function (c) {
-        if (b[c] !== undefined && c !== 'timestamp') sh.getRange(b.fila, indice_(cols, c)).setValue(b[c]);
+        if (b[c] === undefined) return;
+        var valor = (c === 'timestamp') ? new Date(b[c]) : b[c];
+        sh.getRange(b.fila, indice_(cols, c)).setValue(valor);
       });
       return json_({ ok: true, mensaje: 'Registro actualizado' });
     }
@@ -116,6 +145,30 @@ function doPost(e) {
       var sh2 = hoja_().sh, ult = sh2.getLastRow();
       if (ult > 1) sh2.deleteRow(ult);
       return json_({ ok: true, mensaje: 'Deshecho' });
+    }
+
+    if (b.accion === 'perfil') {
+      var p = perfil_();
+      if (b.nombre !== undefined) p.nombre = b.nombre;
+      if (b.nacimiento !== undefined) p.nacimiento = b.nacimiento;
+      guardarPerfil_(p);
+      return json_({ ok: true, mensaje: 'Datos guardados', perfil: p });
+    }
+
+    if (b.accion === 'subir_archivo') {
+      if (!b.datos) return json_({ ok: false, mensaje: 'Sin archivo' });
+      var bytes = Utilities.base64Decode(b.datos);
+      var blob = Utilities.newBlob(bytes, b.tipo || 'application/octet-stream', b.nombre || 'archivo');
+      var archivo = carpetaEstudios_().createFile(blob);
+      archivo.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      escribir_({
+        tipo_evento: 'estudio',
+        notas: b.descripcion || '',
+        archivo_url: archivo.getUrl(),
+        archivo_nombre: archivo.getName(),
+        cliente_hora: b.cliente_hora
+      });
+      return json_({ ok: true, mensaje: 'Archivo subido', url: archivo.getUrl() });
     }
 
     // registro rápido: cualquier tipo_evento con sus campos opcionales
@@ -136,6 +189,12 @@ function doGet(e) {
 
   if (action === 'estado') return json_(Object.assign({ ok: true }, estado_()));
   if (action === 'ultimos') return json_({ ok: true, registros: leerRegistros_(60) });
+  if (action === 'perfil') return json_(Object.assign({ ok: true }, perfil_()));
+
+  if (action === 'estudios') {
+    var todos = leerRegistros_(); // sin límite: que no se pierdan estudios viejos entre el ruido diario
+    return json_({ ok: true, registros: todos.filter(function (r) { return r.tipo_evento === 'estudio'; }) });
+  }
 
   if (action === 'semana') {
     var regs = leerRegistros_(600);
@@ -164,6 +223,6 @@ function doGet(e) {
     });
   }
 
-  // inicial: estado del cronómetro + últimos registros en una sola llamada
-  return json_({ ok: true, estado: estado_(), registros: leerRegistros_(60) });
+  // inicial: estado del cronómetro + últimos registros + perfil en una sola llamada
+  return json_({ ok: true, estado: estado_(), registros: leerRegistros_(60), perfil: perfil_() });
 }
