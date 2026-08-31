@@ -18,7 +18,7 @@ export function leerCola() {
   try { return JSON.parse(localStorage.getItem(COLA) || '[]'); } catch { return []; }
 }
 function guardarCola(cola) {
-  try { localStorage.setItem(COLA, JSON.stringify(cola)); } catch {}
+  try { localStorage.setItem(COLA, JSON.stringify(cola)); } catch { }
 }
 
 // POST. Si no hay red, guarda en la cola y responde ok/offline.
