@@ -25,7 +25,7 @@ var COLUMNAS = [
   'timestamp', 'tipo_evento', 'duracion_minutos', 'notas',
   'lado', 'cantidad_ml', 'contenido', 'consistencia', 'color',
   'crema', 'dosis', 'peso_kg', 'talla_cm', 'cliente_hora',
-  'archivo_url', 'archivo_nombre'
+  'archivo_url', 'archivo_nombre', 'archivo_categoria'
 ];
 
 function hoja_() {
@@ -93,6 +93,14 @@ function carpetaEstudios_() {
   var carpeta = DriveApp.getRootFolder().createFolder('Emma · estudios');
   props.setProperty('carpeta_estudios', carpeta.getId());
   return carpeta;
+}
+
+// Ejecutar esta función UNA VEZ a mano desde el editor (▶ Ejecutar, con esta
+// función elegida en el desplegable de arriba) para autorizar el permiso de
+// Drive. Sin este paso, subir_archivo falla con "No cuentas con el permiso".
+function autorizarDrive() {
+  var carpeta = carpetaEstudios_();
+  Logger.log('Carpeta de estudios lista: ' + carpeta.getUrl());
 }
 
 function escribir_(datos) {
@@ -166,6 +174,7 @@ function doPost(e) {
         notas: b.descripcion || '',
         archivo_url: archivo.getUrl(),
         archivo_nombre: archivo.getName(),
+        archivo_categoria: b.categoria || 'Otro',
         cliente_hora: b.cliente_hora
       });
       return json_({ ok: true, mensaje: 'Archivo subido', url: archivo.getUrl() });

@@ -16,8 +16,12 @@ const DETALLE = {
   teta: [
     { campo: 'lado', label: 'Lado', ops: ['izquierdo', 'derecho', 'ambos'] },
     { campo: 'cantidad_ml', label: 'Biberón', ops: ['60 ml', '90 ml', '120 ml'] },
+    { campo: 'duracion_minutos', label: 'Duración (min)', ops: [], libre: true, numerico: true },
   ],
-  'sueño': [{ campo: 'notas', label: 'Dónde', ops: ['cuna', 'brazos', 'carro'] }],
+  'sueño': [
+    { campo: 'notas', label: 'Dónde', ops: ['cuna', 'brazos', 'carro'] },
+    { campo: 'duracion_minutos', label: 'Duración (min)', ops: [], libre: true, numerico: true },
+  ],
   pis: [{ campo: 'cantidad_ml', label: 'Cantidad', ops: ['poco', 'normal', 'mucho'] }],
   caca: [
     { campo: 'consistencia', label: 'Consistencia', ops: ['blanda', 'normal', 'dura'] },
@@ -511,13 +515,29 @@ export default function App() {
 }
 
 const MAX_BYTES_ARCHIVO = 15 * 1024 * 1024;
+const CATEGORIAS_ESTUDIO = ['Ecografía', 'Análisis', 'Vacunas', 'Pediatra', 'Otro'];
 
 function PantallaEstudios({ estudios, onSubido, onBorrar }) {
   const [archivo, setArchivo] = useState(null);
   const [descripcion, setDescripcion] = useState('');
+  const [categoria, setCategoria] = useState('Otro');
   const [subiendo, setSubiendo] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef(null);
+
+  const grupos = useMemo(() => {
+    if (!estudios) return null;
+    const porCategoria = {};
+    estudios.forEach(r => {
+      const cat = r.archivo_categoria || 'Otro';
+      (porCategoria[cat] = porCategoria[cat] || []).push(r);
+    });
+    const orden = [
+      ...CATEGORIAS_ESTUDIO.filter(c => porCategoria[c]),
+      ...Object.keys(porCategoria).filter(c => !CATEGORIAS_ESTUDIO.includes(c)),
+    ];
+    return orden.map(cat => ({ cat, items: porCategoria[cat] }));
+  }, [estudios]);
 
   function elegirArchivo(e) {
     const f = e.target.files[0] || null;
@@ -538,11 +558,12 @@ function PantallaEstudios({ estudios, onSubido, onBorrar }) {
     const lector = new FileReader();
     lector.onload = () => {
       const base64 = String(lector.result).split(',')[1] || '';
-      subirArchivo({ nombre: archivo.name, tipo: archivo.type, datos: base64, descripcion }).then(res => {
+      subirArchivo({ nombre: archivo.name, tipo: archivo.type, datos: base64, descripcion, categoria }).then(res => {
         setSubiendo(false);
         if (res.ok) {
           setArchivo(null);
           setDescripcion('');
+          setCategoria('Otro');
           if (inputRef.current) inputRef.current.value = '';
           onSubido();
         } else {
@@ -563,6 +584,11 @@ function PantallaEstudios({ estudios, onSubido, onBorrar }) {
         <input ref={inputRef} type="file" accept="image/*,application/pdf" onChange={elegirArchivo} />
         <input className="entrada-texto" placeholder="Descripción (opcional) · ej. Ecografía 20 semanas"
                value={descripcion} onChange={e => setDescripcion(e.target.value)} style={{ marginTop: 6 }} />
+        <div className="opciones" style={{ marginTop: 8, width: '100%', flexWrap: 'wrap' }}>
+          {CATEGORIAS_ESTUDIO.map(c => (
+            <button key={c} type="button" className={categoria === c ? 'on' : ''} onClick={() => setCategoria(c)}>{c}</button>
+          ))}
+        </div>
         {error && <div style={{ color: 'var(--accent)', fontSize: 12, fontWeight: 700 }}>{error}</div>}
         <button className="btn btn-primario" style={{ marginTop: 8 }} disabled={!archivo || subiendo} onClick={subir}>
           {subiendo ? 'Subiendo…' : 'Subir'}
@@ -570,20 +596,25 @@ function PantallaEstudios({ estudios, onSubido, onBorrar }) {
       </div>
 
       <div className="rotulo" style={{ margin: '24px 0 8px' }}>Estudios guardados</div>
-      <hr className="regla" />
-      {estudios === null && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Cargando…</p>}
-      {estudios && !estudios.length && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Todavía no subiste nada.</p>}
-      {estudios && estudios.map(r => (
-        <div key={r.fila} className="archivo">
-          <Icono tipo="documento" s={20} />
-          <a href={r.archivo_url} target="_blank" rel="noreferrer">
-            <span className="t">{r.notas || r.archivo_nombre}</span>
-            <span className="s">{r.archivo_nombre}{r.iso ? ' · ' + new Date(r.iso).toLocaleDateString('es') : ''}</span>
-          </a>
-          <button onClick={() => onBorrar(r.fila)}
-                  style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Borrar">
-            <Icono tipo="cerrar" s={16} />
-          </button>
+      {estudios === null && <><hr className="regla" /><p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Cargando…</p></>}
+      {estudios && !estudios.length && <><hr className="regla" /><p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Todavía no subiste nada.</p></>}
+      {grupos && grupos.map(g => (
+        <div key={g.cat}>
+          <div className="rotulo" style={{ margin: '14px 0 6px', color: 'var(--accent)' }}>{g.cat}</div>
+          <hr className="regla" />
+          {g.items.map(r => (
+            <div key={r.fila} className="archivo">
+              <Icono tipo="documento" s={20} />
+              <a href={r.archivo_url} target="_blank" rel="noreferrer">
+                <span className="t">{r.notas || r.archivo_nombre}</span>
+                <span className="s">{r.archivo_nombre}{r.iso ? ' · ' + new Date(r.iso).toLocaleDateString('es') : ''}</span>
+              </a>
+              <button onClick={() => onBorrar(r.fila)}
+                      style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Borrar">
+                <Icono tipo="cerrar" s={16} />
+              </button>
+            </div>
+          ))}
         </div>
       ))}
     </section>

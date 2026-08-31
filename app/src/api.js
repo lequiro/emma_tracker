@@ -2,7 +2,7 @@
 // Mantiene la cola offline que ya tenía la versión anterior.
 
 export const URL_APP =
-  'https://script.google.com/macros/s/AKfycbyXtWBPgti9NjI81G0Ce8YmnaSsHAHd_MKNSY3ixm8uaS0pE6P6yPPqiVxrY1i4FOJbLQ/exec';
+  'https://script.google.com/macros/s/AKfycby5ivYMw8YG6QsBXXOAbXheVIJcgx1M53TQylD5YvDvgQ2-amLRJoizAiCL40ONq1P-fA/exec';
 
 const COLA = 'cola_pendiente';
 
@@ -35,9 +35,9 @@ export function consultar(action, extra = '') {
 }
 
 // Sube un archivo (estudio). Sin cola offline: si falla, se avisa y se reintenta a mano.
-export function subirArchivo({ nombre, tipo, datos, descripcion }) {
+export function subirArchivo({ nombre, tipo, datos, descripcion, categoria }) {
   const payload = {
-    accion: 'subir_archivo', nombre, tipo, datos, descripcion,
+    accion: 'subir_archivo', nombre, tipo, datos, descripcion, categoria,
     cliente_hora: new Date().toISOString(),
   };
   return conTimeout(URL_APP, { method: 'POST', body: JSON.stringify(payload) }, 25000)
