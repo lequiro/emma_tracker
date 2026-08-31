@@ -131,6 +131,14 @@ function doPost(e) {
       return json_({ ok: true, mensaje: 'Cronómetro en marcha', estado: estado_() });
     }
 
+    if (b.accion === 'ajustar_inicio') {
+      var estAct = estado_();
+      if (!estAct.activo) return json_({ ok: false, mensaje: 'No hay nada en marcha' });
+      if (b.inicio) estAct.inicio = b.inicio;
+      guardarEstado_(estAct);
+      return json_({ ok: true, mensaje: 'Hora de inicio actualizada', estado: estAct });
+    }
+
     if (b.accion === 'detener') {
       var est = estado_();
       if (!est.activo) return json_({ ok: false, mensaje: 'No había nada en marcha' });
@@ -221,7 +229,8 @@ function doGet(e) {
     return json_({
       ok: true,
       registros: todos.filter(function (r) { return r.tipo_evento === 'estudio'; }),
-      categorias: categoriasEstudio_()
+      categorias: categoriasEstudio_(),
+      carpeta: carpetaEstudios_().getUrl()
     });
   }
 

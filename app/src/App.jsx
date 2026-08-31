@@ -42,6 +42,11 @@ const DETALLE = {
 const dosD = n => String(n).padStart(2, '0');
 const reloj = d => dosD(d.getHours()) + ':' + dosD(d.getMinutes());
 
+function horasMin(horas) {
+  const totalMin = Math.round((horas || 0) * 60);
+  return Math.floor(totalMin / 60) + ' h ' + dosD(totalMin % 60);
+}
+
 function hace(desde) {
   const min = Math.floor((Date.now() - desde.getTime()) / 60000);
   if (min < 1) return 'ahora';
@@ -89,15 +94,20 @@ export default function App() {
   const [hoja, setHoja] = useState(null);            // {tipo, modo:'nuevo'|'editar', fila, valores}
   const [aviso, setAviso] = useState(null);
   const [semana, setSemana] = useState(null);
+  const [semanaError, setSemanaError] = useState(false);
   const [estudios, setEstudios] = useState(null);
+  const [estudiosError, setEstudiosError] = useState(false);
   const [categoriasEstudio, setCategoriasEstudio] = useState(null);
+  const [carpetaEstudios, setCarpetaEstudios] = useState('');
   const [perfil, setPerfil] = useState({ nombre: 'Emma', nacimiento: NACIMIENTO });
   const [avisoTeta, setAvisoTeta] = useState(false);
+  const [editarInicio, setEditarInicio] = useState(false);
   const [notifPermiso, setNotifPermiso] = useState(
     typeof Notification !== 'undefined' ? Notification.permission : 'no-disponible'
   );
   const pulsacion = useRef(null);
   const sostenido = useRef(false);
+  const toque = useRef(null);
   const avisadoRef = useRef(false);
   const perfilCargado = useRef(false); // sólo se toma del servidor una vez, para no pisar una edición en curso
 
@@ -134,15 +144,24 @@ export default function App() {
     };
   }, [refrescar]);
 
+  const cargarSemana = useCallback(() => {
+    setSemanaError(false);
+    consultar('semana').then(r => {
+      if (r.ok) setSemana(r); else setSemanaError(true);
+    });
+  }, []);
+
   useEffect(() => {
-    if (vista === 'semana' && !semana) consultar('semana').then(r => r.ok && setSemana(r));
-  }, [vista, semana]);
+    if (vista === 'semana' && !semana) cargarSemana();
+  }, [vista, semana, cargarSemana]);
 
   const cargarEstudios = useCallback(() => {
+    setEstudiosError(false);
     consultar('estudios').then(r => {
-      if (!r.ok) return;
+      if (!r.ok) { setEstudiosError(true); return; }
       setEstudios(r.registros || []);
       setCategoriasEstudio(r.categorias || []);
+      if (r.carpeta) setCarpetaEstudios(r.carpeta);
     });
   }, []);
 
@@ -155,6 +174,14 @@ export default function App() {
     avisadoRef.current = false;
     setAvisoTeta(false);
   }, [ultimaTeta ? ultimaTeta.getTime() : null]);
+
+  // Apagarlo apenas se pone en marcha una toma, sin esperar a que se guarde.
+  useEffect(() => {
+    if (estado && estado.tipo_evento === 'teta' && estado.activo) {
+      avisadoRef.current = false;
+      setAvisoTeta(false);
+    }
+  }, [estado]);
 
   useEffect(() => {
     if (!ultimaTeta || avisadoRef.current) return;
@@ -205,8 +232,14 @@ export default function App() {
   }
 
   // Un toque registra; mantener pulsado abre el detalle.
-  const alPulsar = tipo => () => {
+  // El pointer capture + el chequeo de movimiento evitan que un roce o un
+  // gesto de scroll que empieza en una celda y termina en la de al lado
+  // dispare un registro accidental (o el de otra celda).
+  const TOLERANCIA_MOVIMIENTO = 12; // px
+  const alPulsar = tipo => e => {
     sostenido.current = false;
+    toque.current = { x: e.clientX, y: e.clientY, cancelado: false };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no soportado, no pasa nada */ }
     clearTimeout(pulsacion.current);
     pulsacion.current = setTimeout(() => {
       sostenido.current = true;
@@ -214,11 +247,54 @@ export default function App() {
       setHoja({ tipo, modo: 'nuevo', valores: {} });
     }, PULSACION_LARGA);
   };
+  const alMover = e => {
+    if (!toque.current || toque.current.cancelado) return;
+    const dx = e.clientX - toque.current.x, dy = e.clientY - toque.current.y;
+    if (Math.hypot(dx, dy) > TOLERANCIA_MOVIMIENTO) {
+      toque.current.cancelado = true;
+      clearTimeout(pulsacion.current);
+    }
+  };
   const alSoltar = tipo => () => {
     clearTimeout(pulsacion.current);
-    if (!sostenido.current) registrar(tipo);
+    const cancelado = !toque.current || toque.current.cancelado;
+    toque.current = null;
+    if (!sostenido.current && !cancelado) registrar(tipo);
   };
-  const cancelar = () => clearTimeout(pulsacion.current);
+  const cancelar = () => {
+    clearTimeout(pulsacion.current);
+    if (toque.current) toque.current.cancelado = true;
+  };
+
+  // Mismo mecanismo de mantener presionado, para abrir el detalle de un
+  // registro reciente. Un toque simple no hace nada: hay que sostener.
+  const pulsacionLista = useRef(null);
+  const toqueLista = useRef(null);
+  const mantenerParaAbrir = cb => ({
+    onPointerDown: e => {
+      toqueLista.current = { x: e.clientX, y: e.clientY, cancelado: false };
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no soportado */ }
+      clearTimeout(pulsacionLista.current);
+      pulsacionLista.current = setTimeout(() => {
+        if (toqueLista.current && !toqueLista.current.cancelado) {
+          if (navigator.vibrate) navigator.vibrate(12);
+          cb();
+        }
+      }, PULSACION_LARGA);
+    },
+    onPointerMove: e => {
+      if (!toqueLista.current || toqueLista.current.cancelado) return;
+      const dx = e.clientX - toqueLista.current.x, dy = e.clientY - toqueLista.current.y;
+      if (Math.hypot(dx, dy) > TOLERANCIA_MOVIMIENTO) {
+        toqueLista.current.cancelado = true;
+        clearTimeout(pulsacionLista.current);
+      }
+    },
+    onPointerUp: () => { clearTimeout(pulsacionLista.current); toqueLista.current = null; },
+    onPointerLeave: () => { clearTimeout(pulsacionLista.current); if (toqueLista.current) toqueLista.current.cancelado = true; },
+    onPointerCancel: () => { clearTimeout(pulsacionLista.current); if (toqueLista.current) toqueLista.current.cancelado = true; },
+    onContextMenu: e => e.preventDefault(),
+  });
 
   const enMarcha = estado ? Math.floor((ahora - new Date(estado.inicio)) / 1000) : 0;
   const cronoTexto = dosD(Math.floor(enMarcha / 3600)) + ':' + dosD(Math.floor(enMarcha / 60) % 60) + ':' + dosD(enMarcha % 60);
@@ -243,7 +319,7 @@ export default function App() {
           <h1>{perfil.nombre}</h1>
           <div className="edad">{edad(perfil.nacimiento)}</div>
         </div>
-        <Marca s={30} color="var(--accent)" />
+        <Marca s={30} color="var(--accent-600)" />
       </header>
       {pendientes > 0 && (
         <div className="cola">{pendientes} {pendientes === 1 ? 'registro pendiente' : 'registros pendientes'} de enviar</div>
@@ -258,7 +334,13 @@ export default function App() {
         <section className="pantalla">
           {estado && (
             <div className="marcha">
-              <div className="et"><Icono tipo="reloj" s={15} /> En marcha · {estado.tipo_evento}</div>
+              <div className="et">
+                <Icono tipo="reloj" s={15} /> En marcha · {estado.tipo_evento}
+                <button onClick={() => setEditarInicio(true)} aria-label="Editar hora de inicio"
+                        style={{ marginLeft: 'auto', border: 0, background: 'none', color: 'inherit', padding: 4, opacity: .85 }}>
+                  <Icono tipo="editar" s={15} />
+                </button>
+              </div>
               <div className="fila">
                 <div className="num">{cronoTexto}</div>
                 <button onClick={() => cronometro(estado.tipo_evento)}>Parar</button>
@@ -291,7 +373,8 @@ export default function App() {
               {RAPIDOS.map(({ tipo, etiqueta }) => (
                 <button key={tipo} className="celda"
                         onPointerDown={alPulsar(tipo)} onPointerUp={alSoltar(tipo)}
-                        onPointerLeave={cancelar} onContextMenu={e => e.preventDefault()}>
+                        onPointerMove={alMover} onPointerLeave={cancelar}
+                        onPointerCancel={cancelar} onContextMenu={e => e.preventDefault()}>
                   <Icono tipo={tipo} s={24} />
                   <div className="t" style={{ textTransform: 'capitalize' }}>{etiqueta || tipo}</div>
                 </button>
@@ -303,14 +386,17 @@ export default function App() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
               <div className="rotulo">Últimos registros</div>
               <button onClick={() => setVista('hoy')}
-                      style={{ border: 0, background: 'none', padding: 0, color: 'var(--accent)', fontSize: 10.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase' }}>
+                      style={{ border: 0, background: 'none', padding: 0, color: 'var(--accent-600)', fontSize: 10.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase' }}>
                 Ver el día
               </button>
             </div>
             <hr className="regla" />
+            {registrosDiarios.length > 0 && (
+              <div style={{ fontSize: 10, color: 'var(--n-500)', padding: '8px 0 0' }}>Mantén pulsado para editar</div>
+            )}
             {registrosDiarios.slice(0, 6).map(r => (
               <button key={r.fila} className="entrada"
-                      onClick={() => setHoja({ tipo: r.tipo_evento, modo: 'editar', fila: r.fila, valores: r })}>
+                      {...mantenerParaAbrir(() => setHoja({ tipo: r.tipo_evento, modo: 'editar', fila: r.fila, valores: r }))}>
                 <Icono tipo={r.tipo_evento} s={20} />
                 <span>
                   <span className="t">{r.tipo_evento}</span>
@@ -333,9 +419,12 @@ export default function App() {
           </div>
           <div className="rotulo" style={{ marginBottom: 8 }}>Línea del día</div>
           <hr className="regla" />
+          {delDia.length > 0 && (
+            <div style={{ fontSize: 10, color: 'var(--n-500)', padding: '8px 0 0' }}>Mantén pulsado para editar</div>
+          )}
           {delDia.map(r => (
             <button key={r.fila} className="linea"
-                    onClick={() => setHoja({ tipo: r.tipo_evento, modo: 'editar', fila: r.fila, valores: r })}>
+                    {...mantenerParaAbrir(() => setHoja({ tipo: r.tipo_evento, modo: 'editar', fila: r.fila, valores: r }))}>
               <span className="hora">{reloj(fecha(r))}</span>
               <span className="cuerpo">
                 <Icono tipo={r.tipo_evento} s={20} />
@@ -370,8 +459,8 @@ export default function App() {
           {(semana?.dias || []).map((d, i) => (
             <div className="sueno" key={d.dia}>
               <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', color: 'var(--n-600)' }}>{d.dia}</span>
-              <span className="pista"><i style={{ width: Math.round((d.sueno_horas / 14) * 100) + '%', background: i === 6 ? 'var(--accent)' : 'var(--n-700)' }} /></span>
-              <span className="v">{Math.floor(d.sueno_horas)} h {dosD(Math.round((d.sueno_horas % 1) * 60))}</span>
+              <span className="pista"><i style={{ width: Math.min(100, Math.round((d.sueno_horas / 16) * 100)) + '%', background: i === 6 ? 'var(--accent)' : 'var(--n-700)' }} /></span>
+              <span className="v">{horasMin(d.sueno_horas)}</span>
             </div>
           ))}
 
@@ -388,17 +477,28 @@ export default function App() {
             </>
           )}
 
-          <button className="btn btn-primario" style={{ marginTop: 18 }} onClick={() => window.print()}>
-            <Icono tipo="imprimir" s={16} /> Resumen para el pediatra
-          </button>
-          {!semana && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 16 }}>Cargando la semana…</p>}
+          {semana && (
+            <button className="btn btn-primario" style={{ marginTop: 18 }} onClick={() => window.print()}>
+              <Icono tipo="imprimir" s={16} /> Resumen para el pediatra
+            </button>
+          )}
+          {!semana && !semanaError && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 16 }}>Cargando la semana…</p>}
+          {semanaError && (
+            <div style={{ marginTop: 16 }}>
+              <p style={{ color: 'var(--n-600)', fontSize: 13, marginBottom: 10 }}>No se pudo cargar. Revisá tu conexión.</p>
+              <button className="btn btn-secundario" onClick={cargarSemana}>Reintentar</button>
+            </div>
+          )}
         </section>
       )}
 
       {vista === 'estudios' && (
         <PantallaEstudios
           estudios={estudios}
+          error={estudiosError}
+          carpeta={carpetaEstudios}
           categorias={categoriasEstudio}
+          onReintentar={cargarEstudios}
           onSubido={() => { setEstudios(null); setCategoriasEstudio(null); cargarEstudios(); }}
           onBorrar={fila => {
             llamar({ accion: 'eliminar', fila }).then(() => { setEstudios(null); cargarEstudios(); });
@@ -418,7 +518,7 @@ export default function App() {
         <section className="pantalla pad" style={{ paddingTop: 14 }}>
           <div style={{ display: 'flex', gap: 14, alignItems: 'center', paddingBottom: 16, borderBottom: '2px solid var(--divider)' }}>
             <div style={{ width: 64, height: 64, background: 'var(--accent)', display: 'grid', placeItems: 'center', flex: 'none' }}>
-              <Marca s={38} color="var(--bg)" />
+              <Marca s={38} color="var(--text)" />
             </div>
             <div>
               <div style={{ fontSize: 22, fontWeight: 800, lineHeight: 1 }}>{perfil.nombre}</div>
@@ -509,6 +609,19 @@ export default function App() {
         />
       )}
 
+      {editarInicio && estado && (
+        <EditarInicioSheet
+          valorInicial={aLocal(new Date(estado.inicio))}
+          onCerrar={() => setEditarInicio(false)}
+          onGuardar={valor => {
+            const iso = deLocalISO(valor);
+            setEstado(e => (e ? { ...e, inicio: iso } : e));
+            llamar({ accion: 'ajustar_inicio', inicio: iso }).then(refrescar);
+            setEditarInicio(false);
+          }}
+        />
+      )}
+
       {aviso && (
         <div className="aviso">
           <span>{aviso.texto}</span>
@@ -531,7 +644,7 @@ export default function App() {
 const MAX_BYTES_ARCHIVO = 15 * 1024 * 1024;
 const CATEGORIA_DEFECTO = ['Ecografía', 'Análisis', 'Vacunas', 'Pediatra', 'Otro'];
 
-function PantallaEstudios({ estudios, categorias, onSubido, onBorrar, onMover, onCategorias }) {
+function PantallaEstudios({ estudios, error: cargaError, carpeta, categorias, onReintentar, onSubido, onBorrar, onMover, onCategorias }) {
   const [archivo, setArchivo] = useState(null);
   const [descripcion, setDescripcion] = useState('');
   const [categoria, setCategoria] = useState('');
@@ -609,6 +722,12 @@ function PantallaEstudios({ estudios, categorias, onSubido, onBorrar, onMover, o
 
   return (
     <section className="pantalla pad" style={{ paddingTop: 14 }}>
+      {carpeta && (
+        <a href={carpeta} target="_blank" rel="noreferrer"
+           style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, color: 'var(--accent-600)', marginBottom: 14 }}>
+          <Icono tipo="documento" s={14} /> Ver carpeta "Emma · estudios" en Drive
+        </a>
+      )}
       <div className="rotulo" style={{ marginBottom: 8 }}>Categorías</div>
       <hr className="regla" style={{ marginBottom: 12 }} />
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
@@ -643,18 +762,25 @@ function PantallaEstudios({ estudios, categorias, onSubido, onBorrar, onMover, o
             <button key={c} type="button" className={categoria === c ? 'on' : ''} onClick={() => setCategoria(c)}>{c}</button>
           ))}
         </div>
-        {error && <div style={{ color: 'var(--accent)', fontSize: 12, fontWeight: 700 }}>{error}</div>}
+        {error && <div style={{ color: 'var(--accent-600)', fontSize: 12, fontWeight: 700 }}>{error}</div>}
         <button className="btn btn-primario" style={{ marginTop: 8 }} disabled={!archivo || subiendo} onClick={subir}>
           {subiendo ? 'Subiendo…' : 'Subir'}
         </button>
       </div>
 
       <div className="rotulo" style={{ margin: '24px 0 8px' }}>Estudios guardados</div>
-      {estudios === null && <><hr className="regla" /><p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Cargando…</p></>}
+      {estudios === null && !cargaError && <><hr className="regla" /><p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Cargando…</p></>}
+      {cargaError && (
+        <>
+          <hr className="regla" />
+          <p style={{ color: 'var(--n-600)', fontSize: 13, margin: '10px 0' }}>No se pudo cargar. Revisá tu conexión.</p>
+          <button className="btn btn-secundario" onClick={onReintentar}>Reintentar</button>
+        </>
+      )}
       {estudios && !estudios.length && <><hr className="regla" /><p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Todavía no subiste nada.</p></>}
       {grupos && grupos.map(g => (
         <div key={g.cat}>
-          <div className="rotulo" style={{ margin: '14px 0 6px', color: 'var(--accent)' }}>{g.cat}</div>
+          <div className="rotulo" style={{ margin: '14px 0 6px', color: 'var(--accent-600)' }}>{g.cat}</div>
           <hr className="regla" />
           {g.items.map(r => (
             <div key={r.fila} className="archivo">
@@ -680,6 +806,35 @@ function PantallaEstudios({ estudios, categorias, onSubido, onBorrar, onMover, o
         </div>
       ))}
     </section>
+  );
+}
+
+function EditarInicioSheet({ valorInicial, onCerrar, onGuardar }) {
+  const [valor, setValor] = useState(valorInicial);
+  return (
+    <>
+      <div className="fondo" onClick={onCerrar} />
+      <div className="hoja" role="dialog" aria-label="Editar hora de inicio">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+          <div>
+            <div className="kicker">Editar en curso</div>
+            <h2>Hora de inicio</h2>
+          </div>
+          <button onClick={onCerrar} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Cerrar">
+            <Icono tipo="cerrar" s={22} />
+          </button>
+        </div>
+        <hr className="regla" style={{ margin: '16px 0 0' }} />
+        <div className="campo" style={{ borderBottom: 0 }}>
+          <span className="rotulo">Empezó a las</span>
+          <input className="entrada-texto" type="datetime-local" value={valor} onChange={e => setValor(e.target.value)} />
+        </div>
+        <div className="acciones">
+          <button onClick={onCerrar}>Cancelar</button>
+          <button className="guardar" onClick={() => onGuardar(valor)}>Guardar</button>
+        </div>
+      </div>
+    </>
   );
 }
 

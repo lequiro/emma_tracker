@@ -6,7 +6,7 @@ export const URL_APP =
 
 const COLA = 'cola_pendiente';
 
-function conTimeout(url, opciones = {}, ms = 8000) {
+function conTimeout(url, opciones = {}, ms = 15000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   return fetch(url, { ...opciones, signal: ctrl.signal })

@@ -24,6 +24,7 @@ export const Iconos = {
   documento: p => <S {...p}><path d="M6 2.5h9l4 4V21a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1z" /><path d="M14.5 2.5V7h4.5" /><path d="M8.5 12.5h7M8.5 16h7" /></S>,
   estudio: p => <S {...p}><path d="M6 2.5h9l4 4V21a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1z" /><path d="M14.5 2.5V7h4.5" /><path d="M8.5 12.5h7M8.5 16h7" /></S>,
   subir: p => <S {...p}><path d="M12 20V6" /><path d="M6 11l6-6 6 6" /><path d="M4.5 20h15" /></S>,
+  editar: p => <S {...p}><path d="M4 20l1-4.5L15.5 5l3.5 3.5L8.5 19z" /><path d="M13.5 6.5l4 4" /></S>,
 };
 
 export function Icono({ tipo, s = 24 }) {
