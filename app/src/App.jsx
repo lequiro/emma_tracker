@@ -221,7 +221,7 @@ export default function App() {
       const min = Math.max(1, Math.round((ahora - new Date(estado.inicio)) / 60000));
       setEstado(null);
       llamar({ accion: 'detener' }).then(refrescar);
-      notificar(tipo + ' · ' + min + ' min guardados');
+      notificar(tipo + ' · ' + min + ' min guardados' + (estado.reanudar_fila ? ' (retomado)' : ''));
     } else if (!estado) {
       setEstado({ tipo_evento: tipo, inicio: new Date().toISOString(), activo: true });
       llamar({ accion: 'iniciar', tipo_evento: tipo }).then(res => {
@@ -229,6 +229,20 @@ export default function App() {
         if (res.offline) setPendientes(leerCola().length);
       });
     }
+  }
+
+  // Reabre el último registro guardado de teta/sueño (solo si es el último
+  // del historial) y sigue sumando tiempo a esa misma fila en vez de crear
+  // una nueva al detener.
+  function reanudar(tipo, fila) {
+    if (estado) return;
+    setEstado({ tipo_evento: tipo, inicio: new Date().toISOString(), activo: true, reanudar_fila: fila });
+    llamar({ accion: 'reanudar', tipo_evento: tipo, fila }).then(res => {
+      if (res.estado) setEstado(res.estado);
+      if (res.offline) setPendientes(leerCola().length);
+    });
+    setHoja(null);
+    notificar('Retomando ' + tipo);
   }
 
   // Un toque registra; mantener pulsado abre el detalle.
@@ -606,6 +620,13 @@ export default function App() {
             setHoja(null);
             notificar('Registro eliminado');
           }}
+          onReanudar={
+            !estado && hoja.modo === 'editar' &&
+            (hoja.tipo === 'teta' || hoja.tipo === 'sueño') &&
+            registrosDiarios[0] && registrosDiarios[0].fila === hoja.fila
+              ? () => reanudar(hoja.tipo, hoja.fila)
+              : null
+          }
         />
       )}
 
@@ -838,7 +859,7 @@ function EditarInicioSheet({ valorInicial, onCerrar, onGuardar }) {
   );
 }
 
-function HojaDetalle({ hoja, onCerrar, onGuardar, onBorrar }) {
+function HojaDetalle({ hoja, onCerrar, onGuardar, onBorrar, onReanudar }) {
   const campos = DETALLE[hoja.tipo] || [];
   const [valores, setValores] = useState(() => {
     const v = {};
@@ -893,6 +914,12 @@ function HojaDetalle({ hoja, onCerrar, onGuardar, onBorrar }) {
           <input className="entrada-texto" placeholder="Opcional"
                  value={valores.notas || ''} onChange={e => setValores(v => ({ ...v, notas: e.target.value }))} />
         </div>
+
+        {onReanudar && (
+          <button className="btn btn-secundario" style={{ marginTop: 4 }} onClick={onReanudar}>
+            <Icono tipo="reloj" s={16} /> Retomar cronómetro
+          </button>
+        )}
 
         <div className="acciones">
           <button onClick={hoja.modo === 'editar' ? onBorrar : onCerrar}>
