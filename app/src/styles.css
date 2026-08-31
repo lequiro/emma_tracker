@@ -174,11 +174,17 @@ textarea.entrada-texto{resize:vertical;min-height:64px;line-height:1.4;font-fami
 .cal .pt{width:6px;height:6px}
 .cal .pt.cita{background:var(--accent-600)}
 .cal .pt.vac{background:var(--text)}
-.cal button.sel .pt.cita,.cal button.sel .pt.vac{background:var(--accent)}
+.cal .pt.alerta{background:var(--accent-700)}
+.cal .pt.med{background:var(--n-500)}
+.cal button.sel .pt.cita,.cal button.sel .pt.vac,.cal button.sel .pt.alerta,.cal button.sel .pt.med{background:var(--accent)}
 .leyenda{display:flex;align-items:center;gap:6px;font-size:10px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;color:var(--n-600)}
 .leyenda i{width:6px;height:6px;display:block}
 .leyenda i.cita{background:var(--accent-600)}
 .leyenda i.vac{background:var(--text)}
+.leyenda i.alerta{background:var(--accent-700)}
+.leyenda i.med{background:var(--n-500)}
+.estrellas{display:flex;gap:2px;color:var(--accent-600)}
+.med-item{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid var(--n-300)}
 .vac{display:grid;grid-template-columns:22px 1fr auto;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid var(--n-300)}
 .vac.hecha{color:var(--n-500)}
 .vac .p{font-size:10.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;background:var(--accent);color:var(--text);padding:6px 8px}

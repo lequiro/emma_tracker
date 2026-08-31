@@ -28,6 +28,9 @@ export const Iconos = {
   estudio: p => <S {...p}><path d="M6 2.5h9l4 4V21a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1z" /><path d="M14.5 2.5V7h4.5" /><path d="M8.5 12.5h7M8.5 16h7" /></S>,
   subir: p => <S {...p}><path d="M12 20V6" /><path d="M6 11l6-6 6 6" /><path d="M4.5 20h15" /></S>,
   editar: p => <S {...p}><path d="M4 20l1-4.5L15.5 5l3.5 3.5L8.5 19z" /><path d="M13.5 6.5l4 4" /></S>,
+  estrellaLlena: p => <S {...p} w={0}><path d="M12 2.5l2.9 6.1 6.6.7-4.9 4.6 1.3 6.6L12 17l-5.9 3.5 1.3-6.6-4.9-4.6 6.6-.7z" fill="currentColor" /></S>,
+  estrellaVacia: p => <S {...p} w={1.6}><path d="M12 2.5l2.9 6.1 6.6.7-4.9 4.6 1.3 6.6L12 17l-5.9 3.5 1.3-6.6-4.9-4.6 6.6-.7z" /></S>,
+  medicamento: p => <S {...p}><path d="M6 3.5l4.5 4.5" /><rect x="3.5" y="7.5" width="12" height="6" rx="3" transform="rotate(-45 9.5 10.5)" /><path d="M8 8l3 3" /></S>,
 };
 
 export function Icono({ tipo, s = 24 }) {
