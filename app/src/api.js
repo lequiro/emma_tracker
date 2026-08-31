@@ -2,7 +2,7 @@
 // Mantiene la cola offline que ya tenía la versión anterior.
 
 export const URL_APP =
-  'https://script.google.com/macros/s/AKfycby5ivYMw8YG6QsBXXOAbXheVIJcgx1M53TQylD5YvDvgQ2-amLRJoizAiCL40ONq1P-fA/exec';
+  'https://script.google.com/macros/s/AKfycbyXtWBPgti9NjI81G0Ce8YmnaSsHAHd_MKNSY3ixm8uaS0pE6P6yPPqiVxrY1i4FOJbLQ/exec';
 
 const COLA = 'cola_pendiente';
 
