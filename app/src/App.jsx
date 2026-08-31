@@ -7,8 +7,7 @@ const PULSACION_LARGA = 420;              // ms
 const UMBRAL_TETA_MS = 3 * 60 * 60 * 1000; // aviso "alimente" tras 3 h sin teta
 
 const RAPIDOS = [
-  { tipo: 'pis' }, { tipo: 'caca' }, { tipo: 'pañal' },
-  { tipo: 'baño' }, { tipo: 'vacuna' }, { tipo: 'peso' },
+  { tipo: 'pañal' }, { tipo: 'baño' }, { tipo: 'vacuna' }, { tipo: 'peso' },
 ];
 
 // Campos opcionales de la hoja de detalle, por tipo de evento.
@@ -29,6 +28,9 @@ const DETALLE = {
   ],
   'pañal': [
     { campo: 'contenido', label: 'Contenido', ops: ['pis', 'caca', 'ambos'] },
+    { campo: 'cantidad_ml', label: 'Cantidad', ops: ['poco', 'normal', 'mucho'] },
+    { campo: 'consistencia', label: 'Consistencia', ops: ['blanda', 'normal', 'dura'] },
+    { campo: 'color', label: 'Color', ops: ['mostaza', 'verde', 'marrón'] },
     { campo: 'crema', label: 'Crema', ops: ['sí', 'no'] },
   ],
   'baño': [{ campo: 'duracion_minutos', label: 'Duración', ops: ['5', '10', '15'] }],
@@ -82,7 +84,7 @@ function resumen(r) {
   if (r.talla_cm) partes.push(r.talla_cm + ' cm');
   if (r.duracion_minutos !== '' && r.duracion_minutos != null) partes.push(r.duracion_minutos + ' min');
   if (r.notas) partes.push(r.notas);
-  return partes.join(' · ') || '—';
+  return partes.join(' · ');
 }
 
 export default function App() {
@@ -383,7 +385,7 @@ export default function App() {
               <div className="rotulo">Registro rápido</div>
               <div style={{ fontSize: 10, color: 'var(--n-500)' }}>Mantén pulsado para detalle</div>
             </div>
-            <div className="rejilla tres">
+            <div className="rejilla dos">
               {RAPIDOS.map(({ tipo, etiqueta }) => (
                 <button key={tipo} className="celda"
                         onPointerDown={alPulsar(tipo)} onPointerUp={alSoltar(tipo)}
@@ -505,6 +507,8 @@ export default function App() {
           )}
         </section>
       )}
+
+      {vista === 'citas' && <PantallaCitas registros={registros} />}
 
       {vista === 'estudios' && (
         <PantallaEstudios
@@ -651,9 +655,9 @@ export default function App() {
       )}
 
       <nav className="tabs">
-        {[['registrar', 'Registrar'], ['hoy', 'Hoy'], ['semana', 'Semana'], ['estudios', 'Estudios'], ['ajustes', 'Ajustes']].map(([id, txt]) => (
+        {[['registrar', 'Registrar'], ['hoy', 'Hoy'], ['semana', 'Semana'], ['citas', 'Citas'], ['estudios', 'Estudios'], ['ajustes', 'Ajustes']].map(([id, txt]) => (
           <button key={id} className={vista === id ? 'on' : ''} onClick={() => setVista(id)}>
-            <Icono tipo={{ registrar: 'registrar', hoy: 'reloj', semana: 'barras', estudios: 'documento', ajustes: 'ajustes' }[id]} s={21} />
+            <Icono tipo={{ registrar: 'registrar', hoy: 'reloj', semana: 'barras', citas: 'cita', estudios: 'documento', ajustes: 'ajustes' }[id]} s={21} />
             {txt}
           </button>
         ))}
@@ -665,7 +669,14 @@ export default function App() {
 const MAX_BYTES_ARCHIVO = 15 * 1024 * 1024;
 const CATEGORIA_DEFECTO = ['Ecografía', 'Análisis', 'Vacunas', 'Pediatra', 'Otro'];
 
+const esImagen = nombre => /\.(jpe?g|png|heic|webp)$/i.test(nombre || '');
+const extension = nombre => (String(nombre).split('.').pop() || '?').toUpperCase().slice(0, 4);
+
+// Los estudios son lo primero de la pantalla: fichas en dos columnas.
+// Subir y administrar categorías viven en hojas, no en formularios abiertos.
 function PantallaEstudios({ estudios, error: cargaError, carpeta, categorias, onReintentar, onSubido, onBorrar, onMover, onCategorias }) {
+  const [filtro, setFiltro] = useState('Todos');
+  const [hoja, setHoja] = useState(null);        // 'subir' | 'cats' | ficha
   const [archivo, setArchivo] = useState(null);
   const [descripcion, setDescripcion] = useState('');
   const [categoria, setCategoria] = useState('');
@@ -673,6 +684,7 @@ function PantallaEstudios({ estudios, error: cargaError, carpeta, categorias, on
   const [subiendo, setSubiendo] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef(null);
+  const camaraRef = useRef(null);
 
   const listaCategorias = categorias || CATEGORIA_DEFECTO;
 
@@ -680,19 +692,8 @@ function PantallaEstudios({ estudios, error: cargaError, carpeta, categorias, on
     if (listaCategorias.length && !listaCategorias.includes(categoria)) setCategoria(listaCategorias[0]);
   }, [categorias]); // eslint-disable-line
 
-  const grupos = useMemo(() => {
-    if (!estudios) return null;
-    const porCategoria = {};
-    estudios.forEach(r => {
-      const cat = r.archivo_categoria || 'Otro';
-      (porCategoria[cat] = porCategoria[cat] || []).push(r);
-    });
-    const orden = [
-      ...listaCategorias.filter(c => porCategoria[c]),
-      ...Object.keys(porCategoria).filter(c => !listaCategorias.includes(c)),
-    ];
-    return orden.map(cat => ({ cat, items: porCategoria[cat] }));
-  }, [estudios, categorias]); // eslint-disable-line
+  const cuenta = c => (estudios || []).filter(r => (r.archivo_categoria || 'Otro') === c).length;
+  const visibles = (estudios || []).filter(r => filtro === 'Todos' || (r.archivo_categoria || 'Otro') === filtro);
 
   function elegirArchivo(e) {
     const f = e.target.files[0] || null;
@@ -700,7 +701,7 @@ function PantallaEstudios({ estudios, error: cargaError, carpeta, categorias, on
     if (f && f.size > MAX_BYTES_ARCHIVO) {
       setError('Archivo muy grande (máx. 15 MB).');
       setArchivo(null);
-      if (inputRef.current) inputRef.current.value = '';
+      e.target.value = '';
       return;
     }
     setArchivo(f);
@@ -719,6 +720,8 @@ function PantallaEstudios({ estudios, error: cargaError, carpeta, categorias, on
           setArchivo(null);
           setDescripcion('');
           if (inputRef.current) inputRef.current.value = '';
+          if (camaraRef.current) camaraRef.current.value = '';
+          setHoja(null);
           onSubido();
         } else {
           setError(res.mensaje || 'No se pudo subir. Probá de nuevo.');
@@ -736,97 +739,437 @@ function PantallaEstudios({ estudios, error: cargaError, carpeta, categorias, on
     onCategorias([...listaCategorias, nombre]);
   }
 
-  function eliminarCategoria(c) {
-    onCategorias(listaCategorias.filter(x => x !== c));
-    if (categoria === c) setCategoria('');
-  }
-
   return (
-    <section className="pantalla pad" style={{ paddingTop: 14 }}>
-      {carpeta && (
-        <a href={carpeta} target="_blank" rel="noreferrer"
-           style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, color: 'var(--accent-600)', marginBottom: 14 }}>
-          <Icono tipo="documento" s={14} /> Ver carpeta "Emma · estudios" en Drive
-        </a>
-      )}
-      <div className="rotulo" style={{ marginBottom: 8 }}>Categorías</div>
-      <hr className="regla" style={{ marginBottom: 12 }} />
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-        {listaCategorias.map(c => (
-          <span key={c} style={{ display: 'flex', alignItems: 'center', gap: 2, background: 'var(--n-200)', padding: '6px 4px 6px 12px', fontSize: 12, fontWeight: 700 }}>
-            {c}
-            <button onClick={() => eliminarCategoria(c)} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 6 }} aria-label={'Borrar categoría ' + c}>
-              <Icono tipo="cerrar" s={12} />
-            </button>
-          </span>
+    <section className="pantalla" style={{ paddingTop: 8 }}>
+      <input ref={inputRef} type="file" accept="image/*,application/pdf" onChange={elegirArchivo} hidden />
+      <input ref={camaraRef} type="file" accept="image/*" capture="environment" onChange={elegirArchivo} hidden />
+
+      <div className="filtros">
+        {['Todos', ...listaCategorias].map(c => (
+          <button key={c} className={'filtro' + (filtro === c ? ' on' : '')} onClick={() => setFiltro(c)}>
+            {c}<i>{c === 'Todos' ? (estudios || []).length : cuenta(c)}</i>
+          </button>
         ))}
-        {!listaCategorias.length && <span style={{ fontSize: 12, color: 'var(--n-600)' }}>No hay categorías todavía.</span>}
-      </div>
-      <div style={{ display: 'flex', gap: 6 }}>
-        <input className="entrada-texto" placeholder="Nueva categoría" value={nuevaCategoria}
-               onChange={e => setNuevaCategoria(e.target.value)}
-               onKeyDown={e => e.key === 'Enter' && agregarCategoria()} style={{ flex: 1 }} />
-        <button className="btn btn-secundario" style={{ width: 'auto', padding: '0 18px' }} onClick={agregarCategoria}>
-          Agregar
-        </button>
       </div>
 
-      <div className="rotulo" style={{ margin: '24px 0 8px' }}>Subir estudio</div>
-      <hr className="regla" style={{ marginBottom: 12 }} />
-      <div className="subida">
-        <Icono tipo="subir" s={26} />
-        <input ref={inputRef} type="file" accept="image/*,application/pdf" onChange={elegirArchivo} />
-        <input className="entrada-texto" placeholder="Descripción (opcional) · ej. Ecografía 20 semanas"
-               value={descripcion} onChange={e => setDescripcion(e.target.value)} style={{ marginTop: 6 }} />
-        <div className="opciones" style={{ marginTop: 8, width: '100%', flexWrap: 'wrap' }}>
-          {listaCategorias.map(c => (
-            <button key={c} type="button" className={categoria === c ? 'on' : ''} onClick={() => setCategoria(c)}>{c}</button>
-          ))}
-        </div>
-        {error && <div style={{ color: 'var(--accent-600)', fontSize: 12, fontWeight: 700 }}>{error}</div>}
-        <button className="btn btn-primario" style={{ marginTop: 8 }} disabled={!archivo || subiendo} onClick={subir}>
-          {subiendo ? 'Subiendo…' : 'Subir'}
-        </button>
-      </div>
-
-      <div className="rotulo" style={{ margin: '24px 0 8px' }}>Estudios guardados</div>
-      {estudios === null && !cargaError && <><hr className="regla" /><p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Cargando…</p></>}
-      {cargaError && (
-        <>
-          <hr className="regla" />
-          <p style={{ color: 'var(--n-600)', fontSize: 13, margin: '10px 0' }}>No se pudo cargar. Revisá tu conexión.</p>
-          <button className="btn btn-secundario" onClick={onReintentar}>Reintentar</button>
-        </>
-      )}
-      {estudios && !estudios.length && <><hr className="regla" /><p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Todavía no subiste nada.</p></>}
-      {grupos && grupos.map(g => (
-        <div key={g.cat}>
-          <div className="rotulo" style={{ margin: '14px 0 6px', color: 'var(--accent-600)' }}>{g.cat}</div>
-          <hr className="regla" />
-          {g.items.map(r => (
-            <div key={r.fila} className="archivo">
-              <Icono tipo="documento" s={20} />
-              <a href={r.archivo_url} target="_blank" rel="noreferrer">
+      <div className="pad">
+        {visibles.length > 0 && (
+          <div className="fichas">
+            {visibles.map(r => (
+              <button key={r.fila} className="ficha" onClick={() => setHoja(r)}>
+                <span className={'prev' + (esImagen(r.archivo_nombre) ? ' img' : '')}>
+                  {extension(r.archivo_nombre)}
+                  <span className="cat">{r.archivo_categoria || 'Otro'}</span>
+                </span>
                 <span className="t">{r.notas || r.archivo_nombre}</span>
-                <span className="s">{r.archivo_nombre}{r.iso ? ' · ' + new Date(r.iso).toLocaleDateString('es') : ''}</span>
-              </a>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <select value={r.archivo_categoria || 'Otro'} onChange={e => onMover(r.fila, e.target.value)}
-                        style={{ fontSize: 10.5, fontWeight: 700, border: '1px solid var(--divider)', background: 'var(--bg)', color: 'var(--text)', padding: '5px 2px', maxWidth: 76 }}>
-                  {(listaCategorias.includes(r.archivo_categoria) ? listaCategorias : [...listaCategorias, r.archivo_categoria || 'Otro']).map(c => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                </select>
-                <button onClick={() => onBorrar(r.fila)}
-                        style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Borrar">
+                <span className="s">{r.iso ? new Date(r.iso).toLocaleDateString('es') : ''}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {estudios === null && !cargaError && <p style={{ color: 'var(--n-600)', fontSize: 13 }}>Cargando…</p>}
+        {cargaError && (
+          <>
+            <p style={{ color: 'var(--n-600)', fontSize: 13, margin: '10px 0' }}>No se pudo cargar. Revisá tu conexión.</p>
+            <button className="btn btn-secundario" onClick={onReintentar}>Reintentar</button>
+          </>
+        )}
+        {estudios && !estudios.length && <p style={{ color: 'var(--n-600)', fontSize: 13 }}>Todavía no subiste nada.</p>}
+        {estudios && estudios.length > 0 && !visibles.length && (
+          <p style={{ color: 'var(--n-600)', fontSize: 13 }}>Nada en {filtro}.</p>
+        )}
+
+        {carpeta && (
+          <>
+            <div className="rotulo" style={{ margin: '22px 0 8px' }}>Guardado en Drive</div>
+            <hr className="regla" />
+            <a className="drive" href={carpeta} target="_blank" rel="noreferrer">
+              <Icono tipo="documento" s={20} />
+              <span style={{ flex: 1 }}>
+                <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600 }}>Emma · estudios</span>
+                <span style={{ display: 'block', fontSize: 10.5, fontWeight: 500, color: 'var(--n-600)', marginTop: 6 }}>Carpeta compartida</span>
+              </span>
+              <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--accent-600)' }}>Abrir</span>
+            </a>
+          </>
+        )}
+
+        <button className="btn btn-primario" style={{ marginTop: 18 }} onClick={() => setHoja('subir')}>
+          <Icono tipo="subir" s={16} /> Subir estudio
+        </button>
+        <button className="btn btn-secundario" style={{ marginTop: 10 }} onClick={() => setHoja('cats')}>
+          <Icono tipo="ajustes" s={16} /> Administrar categorías
+        </button>
+      </div>
+
+      {hoja === 'subir' && (
+        <>
+          <div className="fondo" onClick={() => setHoja(null)} />
+          <div className="hoja" role="dialog" aria-label="Subir estudio">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+              <div>
+                <div className="kicker">Nuevo</div>
+                <h2>Subir estudio</h2>
+              </div>
+              <button onClick={() => setHoja(null)} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Cerrar">
+                <Icono tipo="cerrar" s={22} />
+              </button>
+            </div>
+            <hr className="regla" style={{ margin: '16px 0 0' }} />
+            <div className="rejilla dos" style={{ marginTop: 14 }}>
+              <button className="celda" onClick={() => camaraRef.current && camaraRef.current.click()}>
+                <Icono tipo="camara" s={26} />
+                <div className="t">Sacar foto</div>
+              </button>
+              <button className="celda" onClick={() => inputRef.current && inputRef.current.click()}>
+                <Icono tipo="documento" s={26} />
+                <div className="t">Elegir archivo</div>
+              </button>
+            </div>
+            {archivo && (
+              <div className="elegido">
+                <span className="mini">{extension(archivo.name)}</span>
+                <span style={{ flex: 1 }}>
+                  <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600 }}>{archivo.name}</span>
+                  <span style={{ display: 'block', fontSize: 10.5, fontWeight: 500, color: 'var(--n-600)', marginTop: 6 }}>
+                    {(archivo.size / 1048576).toFixed(1)} MB · listo para subir
+                  </span>
+                </span>
+                <button onClick={() => setArchivo(null)} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Quitar">
                   <Icono tipo="cerrar" s={16} />
                 </button>
               </div>
+            )}
+            <div className="campo">
+              <span className="rotulo">Categoría</span>
+              <div className="opciones" style={{ flexWrap: 'wrap' }}>
+                {listaCategorias.map(c => (
+                  <button key={c} type="button" className={categoria === c ? 'on' : ''} onClick={() => setCategoria(c)}>{c}</button>
+                ))}
+              </div>
             </div>
-          ))}
-        </div>
-      ))}
+            <div className="campo" style={{ borderBottom: 0 }}>
+              <span className="rotulo">Descripción</span>
+              <input className="entrada-texto" placeholder="Opcional · ej. Ecografía de cadera, 4 meses"
+                     value={descripcion} onChange={e => setDescripcion(e.target.value)} />
+            </div>
+            {error && <div style={{ color: 'var(--accent-700)', fontSize: 12, fontWeight: 700 }}>{error}</div>}
+            <div className="acciones">
+              <button onClick={() => setHoja(null)}>Cancelar</button>
+              <button className="guardar" disabled={!archivo || subiendo} onClick={subir}>
+                {subiendo ? 'Subiendo…' : 'Subir a Drive'}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {hoja === 'cats' && (
+        <>
+          <div className="fondo" onClick={() => setHoja(null)} />
+          <div className="hoja" role="dialog" aria-label="Categorías">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+              <div>
+                <div className="kicker">Organizar</div>
+                <h2>Categorías</h2>
+              </div>
+              <button onClick={() => setHoja(null)} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Cerrar">
+                <Icono tipo="cerrar" s={22} />
+              </button>
+            </div>
+            <hr className="regla" style={{ margin: '16px 0 0' }} />
+            {listaCategorias.map(c => (
+              <div key={c} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '13px 0', borderBottom: '1px solid var(--n-300)' }}>
+                <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{c}</span>
+                <span style={{ fontSize: 10.5, fontWeight: 500, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--n-600)' }}>{cuenta(c)} archivos</span>
+                <button onClick={() => { onCategorias(listaCategorias.filter(x => x !== c)); if (filtro === c) setFiltro('Todos'); }}
+                        style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label={'Borrar categoría ' + c}>
+                  <Icono tipo="cerrar" s={16} />
+                </button>
+              </div>
+            ))}
+            {!listaCategorias.length && <p style={{ color: 'var(--n-600)', fontSize: 13 }}>No hay categorías todavía.</p>}
+            <div style={{ display: 'flex', gap: 6, marginTop: 14 }}>
+              <input className="entrada-texto" placeholder="Nueva categoría" value={nuevaCategoria}
+                     onChange={e => setNuevaCategoria(e.target.value)}
+                     onKeyDown={e => e.key === 'Enter' && agregarCategoria()} style={{ flex: 1 }} />
+              <button className="btn btn-primario" style={{ width: 'auto', padding: '0 18px' }} onClick={agregarCategoria}>Agregar</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {hoja && typeof hoja === 'object' && (
+        <>
+          <div className="fondo" onClick={() => setHoja(null)} />
+          <div className="hoja" role="dialog" aria-label="Estudio">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+              <div>
+                <div className="kicker">{hoja.archivo_categoria || 'Otro'}</div>
+                <h2 style={{ textTransform: 'none' }}>{hoja.notas || hoja.archivo_nombre}</h2>
+              </div>
+              <button onClick={() => setHoja(null)} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Cerrar">
+                <Icono tipo="cerrar" s={22} />
+              </button>
+            </div>
+            <hr className="regla" style={{ margin: '16px 0 0' }} />
+            <div className="elegido">
+              <span className="mini">{extension(hoja.archivo_nombre)}</span>
+              <span style={{ flex: 1 }}>
+                <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, wordBreak: 'break-word' }}>{hoja.archivo_nombre}</span>
+                <span style={{ display: 'block', fontSize: 10.5, fontWeight: 500, color: 'var(--n-600)', marginTop: 6 }}>
+                  {hoja.iso ? new Date(hoja.iso).toLocaleDateString('es') : ''}
+                </span>
+              </span>
+            </div>
+            <div className="campo">
+              <span className="rotulo">Mover a</span>
+              <div className="opciones" style={{ flexWrap: 'wrap' }}>
+                {listaCategorias.map(c => (
+                  <button key={c} type="button" className={(hoja.archivo_categoria || 'Otro') === c ? 'on' : ''}
+                          onClick={() => { onMover(hoja.fila, c); setHoja({ ...hoja, archivo_categoria: c }); }}>{c}</button>
+                ))}
+              </div>
+            </div>
+            <div className="acciones">
+              <button onClick={() => { onBorrar(hoja.fila); setHoja(null); }}>Borrar</button>
+              <button className="guardar" onClick={() => { window.open(hoja.archivo_url, '_blank'); setHoja(null); }}>Abrir archivo</button>
+            </div>
+          </div>
+        </>
+      )}
     </section>
+  );
+}
+
+// ── Citas y vacunas ───────────────────────────────────────────────
+// Las citas se guardan en el celular (no tocan la hoja de cálculo);
+// las vacunas cruzan el esquema oficial con los registros tipo "vacuna".
+const CITAS_LS = 'citas_emma';
+const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const DIAS_SEMANA = ['Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sá', 'Do'];
+
+const ESQUEMA = [
+  { nombre: 'BCG', edad: 'Al nacer', mes: 0 },
+  { nombre: 'Hepatitis B', edad: 'Al nacer', mes: 0 },
+  { nombre: 'Pentavalente · 1ª', edad: '2 meses', mes: 2 },
+  { nombre: 'Neumococo · 1ª', edad: '2 meses', mes: 2 },
+  { nombre: 'Rotavirus · 1ª', edad: '2 meses', mes: 2 },
+  { nombre: 'Pentavalente · 2ª', edad: '4 meses', mes: 4 },
+  { nombre: 'Neumococo · 2ª', edad: '4 meses', mes: 4 },
+  { nombre: 'Polio IPV · 2ª', edad: '4 meses', mes: 4 },
+  { nombre: 'Triple viral', edad: '12 meses', mes: 12 },
+];
+
+function leerCitas() {
+  try { return JSON.parse(localStorage.getItem(CITAS_LS) || '[]'); } catch { return []; }
+}
+function guardarCitas(lista) {
+  try { localStorage.setItem(CITAS_LS, JSON.stringify(lista)); } catch { }
+}
+
+function PantallaCitas({ registros }) {
+  const [citas, setCitas] = useState(() => leerCitas().sort((a, b) => a.iso.localeCompare(b.iso)));
+  const [mes, setMes] = useState(() => { const d = new Date(); return { a: d.getFullYear(), m: d.getMonth() }; });
+  const [sel, setSel] = useState(null);
+  const [hoja, setHoja] = useState(null); // 'nueva' | cita
+
+  function persistir(lista) {
+    const orden = [...lista].sort((a, b) => a.iso.localeCompare(b.iso));
+    setCitas(orden);
+    guardarCitas(orden);
+  }
+
+  const futuras = citas.filter(c => new Date(c.iso) >= new Date(Date.now() - 6 * 3600000));
+  const proxima = futuras[0];
+
+  const vacunas = ESQUEMA.map(v => {
+    const puesta = (registros || []).find(r =>
+      r.tipo_evento === 'vacuna' && String(r.dosis || '').toLowerCase().includes(v.nombre.split(' ·')[0].toLowerCase()));
+    return { ...v, puesta };
+  });
+  const aplicadas = vacunas.filter(v => v.puesta).length;
+
+  const primero = new Date(mes.a, mes.m, 1);
+  const huecos = (primero.getDay() + 6) % 7;
+  const largo = new Date(mes.a, mes.m + 1, 0).getDate();
+  const marcaDia = n => {
+    const dia = new Date(mes.a, mes.m, n).toDateString();
+    return citas.some(c => new Date(c.iso).toDateString() === dia)
+      ? (citas.some(c => new Date(c.iso).toDateString() === dia && c.vacuna) ? 'vac' : 'cita')
+      : null;
+  };
+
+  const diasFalta = iso => Math.round((new Date(iso) - Date.now()) / 86400000);
+
+  return (
+    <section className="pantalla">
+      {proxima ? (
+        <div className="marcha">
+          <div className="et"><Icono tipo="cita" s={15} /> Próxima cita · {diasFalta(proxima.iso) <= 0 ? 'hoy' : 'en ' + diasFalta(proxima.iso) + ' días'}</div>
+          <h2 style={{ fontSize: 26, fontWeight: 800, letterSpacing: '-.02em', margin: '10px 0 0', lineHeight: 1.05 }}>{proxima.titulo}</h2>
+          <div style={{ fontSize: 12, fontWeight: 500, marginTop: 7, lineHeight: 1.5 }}>
+            {new Date(proxima.iso).toLocaleDateString('es', { weekday: 'short', day: 'numeric', month: 'short' })} · {reloj(new Date(proxima.iso))}
+            {proxima.lugar ? <><br />{proxima.lugar}</> : null}
+          </div>
+          <div className="acciones" style={{ marginTop: 16 }}>
+            <button onClick={() => setHoja(proxima)}>Ver detalle</button>
+            {proxima.lugar
+              ? <button className="guardar" style={{ background: 'var(--text)', color: 'var(--bg)' }}
+                        onClick={() => window.open('https://maps.google.com/?q=' + encodeURIComponent(proxima.lugar), '_blank')}>Cómo llegar</button>
+              : <button className="guardar" style={{ background: 'var(--text)', color: 'var(--bg)' }} onClick={() => setHoja(proxima)}>Editar</button>}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="pad" style={{ paddingTop: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+          <div className="rotulo">{new Date(mes.a, mes.m, 1).toLocaleDateString('es', { month: 'long', year: 'numeric' })}</div>
+          <div style={{ display: 'flex', gap: 14 }}>
+            <button onClick={() => setMes(m => ({ a: m.m ? m.a : m.a - 1, m: m.m ? m.m - 1 : 11 }))}
+                    style={{ border: 0, background: 'none', padding: 0, fontSize: 13, fontWeight: 800, color: 'var(--text)' }} aria-label="Mes anterior">←</button>
+            <button onClick={() => setMes(m => ({ a: m.m === 11 ? m.a + 1 : m.a, m: m.m === 11 ? 0 : m.m + 1 }))}
+                    style={{ border: 0, background: 'none', padding: 0, fontSize: 13, fontWeight: 800, color: 'var(--text)' }} aria-label="Mes siguiente">→</button>
+          </div>
+        </div>
+        <div className="semanas">{DIAS_SEMANA.map(d => <span key={d}>{d}</span>)}</div>
+        <div className="cal">
+          {Array.from({ length: huecos }).map((_, i) => <button key={'h' + i} className="off" disabled />)}
+          {Array.from({ length: largo }).map((_, i) => {
+            const n = i + 1;
+            const marca = marcaDia(n);
+            return (
+              <button key={n} className={sel === n ? 'sel' : ''} onClick={() => setSel(sel === n ? null : n)}>
+                {n}<span className={'pt' + (marca ? ' ' + marca : '')} />
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ display: 'flex', gap: 16, marginTop: 10 }}>
+          <span className="leyenda"><i className="cita" />Cita</span>
+          <span className="leyenda"><i className="vac" />Vacuna</span>
+        </div>
+
+        <div className="rotulo" style={{ margin: '26px 0 8px' }}>Lo que viene</div>
+        <hr className="regla" />
+        {futuras.map(c => (
+          <button key={c.id} className="linea" onClick={() => setHoja(c)}>
+            <span className="hora" style={{ fontSize: 15 }}>
+              {dosD(new Date(c.iso).getDate())}
+              <span style={{ display: 'block', fontSize: 10, fontWeight: 500, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--n-500)', marginTop: 5 }}>
+                {MESES[new Date(c.iso).getMonth()]}
+              </span>
+            </span>
+            <span className="cuerpo">
+              <span style={{ flex: 1 }}>
+                <span style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>{c.titulo}</span>
+                <span style={{ display: 'block', fontSize: 10.5, fontWeight: 500, color: 'var(--n-600)', marginTop: 6 }}>{c.lugar || 'Sin lugar'}</span>
+              </span>
+              <span style={{ fontSize: 12, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{reloj(new Date(c.iso))}</span>
+            </span>
+          </button>
+        ))}
+        {!futuras.length && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>No hay citas anotadas.</p>}
+        <button className="btn btn-secundario" style={{ marginTop: 14 }} onClick={() => setHoja('nueva')}>
+          <Icono tipo="mas" s={16} /> Agregar cita
+        </button>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '26px 0 8px' }}>
+          <div className="rotulo">Calendario de vacunas</div>
+          <div style={{ fontSize: 10, color: 'var(--n-500)' }}>{aplicadas} de {vacunas.length} aplicadas</div>
+        </div>
+        <hr className="regla" />
+        {vacunas.map(v => (
+          <div key={v.nombre} className={'vac' + (v.puesta ? ' hecha' : '')}>
+            <Icono tipo="vacuna" s={20} />
+            <span>
+              <span style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>{v.nombre}</span>
+              <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--n-600)', marginTop: 7 }}>{v.edad}</span>
+            </span>
+            {v.puesta
+              ? <span className="d">{new Date(v.puesta.iso || v.puesta.timestamp).toLocaleDateString('es', { day: 'numeric', month: 'short' })}</span>
+              : <span className="p">Pendiente</span>}
+          </div>
+        ))}
+      </div>
+
+      {hoja && (
+        <HojaCita
+          cita={hoja === 'nueva' ? null : hoja}
+          onCerrar={() => setHoja(null)}
+          onGuardar={c => { persistir(hoja === 'nueva' ? [...citas, c] : citas.map(x => x.id === c.id ? c : x)); setHoja(null); }}
+          onBorrar={id => { persistir(citas.filter(x => x.id !== id)); setHoja(null); }}
+        />
+      )}
+    </section>
+  );
+}
+
+function HojaCita({ cita, onCerrar, onGuardar, onBorrar }) {
+  const [titulo, setTitulo] = useState(cita ? cita.titulo : '');
+  const [cuando, setCuando] = useState(cita ? aLocal(new Date(cita.iso)) : aLocal(new Date()));
+  const [lugar, setLugar] = useState(cita ? cita.lugar || '' : '');
+  const [nota, setNota] = useState(cita ? cita.nota || '' : '');
+  const [aviso, setAviso] = useState(cita ? cita.aviso || '1 día antes' : '1 día antes');
+  const [vacuna, setVacuna] = useState(cita ? !!cita.vacuna : false);
+
+  return (
+    <>
+      <div className="fondo" onClick={onCerrar} />
+      <div className="hoja" role="dialog" aria-label="Cita">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+          <div>
+            <div className="kicker">{cita ? 'Editar' : 'Nueva'}</div>
+            <h2 style={{ textTransform: 'none' }}>{cita ? cita.titulo : 'Cita'}</h2>
+          </div>
+          <button onClick={onCerrar} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Cerrar">
+            <Icono tipo="cerrar" s={22} />
+          </button>
+        </div>
+        <hr className="regla" style={{ margin: '16px 0 0' }} />
+        <div className="campo">
+          <span className="rotulo">Qué</span>
+          <input className="entrada-texto" placeholder="ej. Control de 4 meses" value={titulo} onChange={e => setTitulo(e.target.value)} />
+        </div>
+        <div className="campo">
+          <span className="rotulo">Cuándo</span>
+          <input className="entrada-texto" type="datetime-local" value={cuando} onChange={e => setCuando(e.target.value)} />
+        </div>
+        <div className="campo">
+          <span className="rotulo">Dónde</span>
+          <input className="entrada-texto" placeholder="Consultorio, dirección o médico" value={lugar} onChange={e => setLugar(e.target.value)} />
+        </div>
+        <div className="campo">
+          <span className="rotulo">Tipo</span>
+          <div className="opciones">
+            <button className={!vacuna ? 'on' : ''} onClick={() => setVacuna(false)}>Consulta</button>
+            <button className={vacuna ? 'on' : ''} onClick={() => setVacuna(true)}>Vacunas</button>
+          </div>
+        </div>
+        <div className="campo">
+          <span className="rotulo">Avisarme</span>
+          <div className="opciones">
+            {['1 día antes', '2 h antes', 'No'].map(a => (
+              <button key={a} className={aviso === a ? 'on' : ''} onClick={() => setAviso(a)}>{a}</button>
+            ))}
+          </div>
+        </div>
+        <div className="campo" style={{ borderBottom: 0 }}>
+          <span className="rotulo">Nota</span>
+          <input className="entrada-texto" placeholder="Opcional · ej. preguntar por el reflujo" value={nota} onChange={e => setNota(e.target.value)} />
+        </div>
+        <div className="acciones">
+          <button onClick={() => (cita ? onBorrar(cita.id) : onCerrar())}>{cita ? 'Borrar' : 'Cancelar'}</button>
+          <button className="guardar" disabled={!titulo.trim()}
+                  onClick={() => onGuardar({
+                    id: cita ? cita.id : 'c' + Date.now(),
+                    titulo: titulo.trim(), iso: deLocalISO(cuando), lugar, nota, aviso, vacuna,
+                  })}>
+            Guardar
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
 

@@ -45,7 +45,7 @@ button{cursor:pointer}
 .rejilla{display:grid;gap:2px;background:var(--divider);padding:2px}
 .rejilla.dos{grid-template-columns:1fr 1fr}
 .rejilla.tres{grid-template-columns:repeat(3,1fr)}
-.celda{border:0;background:var(--bg);padding:16px 14px;text-align:left;display:flex;flex-direction:column;gap:12px;align-items:flex-start;min-height:88px;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.celda{border:0;background:var(--bg);padding:16px 14px;text-align:left;display:flex;flex-direction:column;gap:12px;align-items:flex-start;min-height:88px;touch-action:pan-y;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .celda:hover{background:var(--accent-100)}
 .celda:active,.celda.pulsada{background:var(--accent-200)}
 .celda .t{font-size:15px;font-weight:800;line-height:1}
@@ -57,7 +57,8 @@ button{cursor:pointer}
 .entrada:hover{background:rgba(32,30,29,.045)}
 .entrada:active,.entrada.pulsada{background:var(--accent-100)}
 .entrada .t{font-size:14px;font-weight:600;line-height:1.15;text-transform:capitalize}
-.entrada .s{font-size:11px;font-weight:500;color:var(--n-600);margin-top:4px}
+.entrada .s{font-size:11px;font-weight:500;color:var(--n-600);margin-top:8px}
+.entrada .s:empty{display:none}
 .entrada .h{font-size:12px;font-weight:800;text-align:right;font-variant-numeric:tabular-nums}
 .entrada .h span{display:block;font-size:10.5px;font-weight:500;color:var(--n-500);margin-top:4px}
 
@@ -121,7 +122,7 @@ button{cursor:pointer}
 .aviso button{border:0;background:none;color:var(--accent-400);font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}
 
 /* barra inferior */
-.tabs{position:fixed;left:0;right:0;bottom:0;z-index:60;background:var(--bg);border-top:2px solid var(--text);padding:9px 8px calc(10px + env(safe-area-inset-bottom));display:grid;grid-template-columns:repeat(5,1fr)}
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:60;background:var(--bg);border-top:2px solid var(--text);padding:9px 4px calc(10px + env(safe-area-inset-bottom));display:grid;grid-template-columns:repeat(6,1fr)}
 .tabs button{border:0;background:none;padding:8px 4px;display:flex;flex-direction:column;align-items:center;gap:6px;color:var(--n-500);font-size:9.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;min-height:56px}
 .tabs button.on{color:var(--accent-600)}
 
@@ -141,3 +142,43 @@ button{cursor:pointer}
   .impreso th{text-align:left;border-bottom:2px solid #201e1d;padding:2mm 0;font-size:8pt;letter-spacing:.1em;text-transform:uppercase}
   .impreso td{border-bottom:1px solid #d7d3d3;padding:2mm 0}
 }
+
+/* estudios: filtros y fichas */
+.filtros{display:flex;gap:2px;overflow:auto;padding:0 20px 12px;scrollbar-width:none;-ms-overflow-style:none}
+.filtros::-webkit-scrollbar{display:none}
+.filtro{flex:none;border:0;padding:9px 12px;display:flex;align-items:center;gap:7px;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;background:var(--n-200);color:var(--text)}
+.filtro.on{background:var(--text);color:var(--bg)}
+.filtro i{font-style:normal;font-size:10px;font-weight:500;letter-spacing:0;color:var(--n-600)}
+.filtro.on i{color:var(--n-400)}
+.fichas{display:grid;grid-template-columns:1fr 1fr;gap:2px;background:var(--divider);padding:2px}
+.ficha{border:0;background:var(--bg);padding:0;text-align:left;display:flex;flex-direction:column}
+.ficha:hover{background:var(--accent-100)}
+.ficha:active{background:var(--accent-200)}
+.ficha .prev{position:relative;aspect-ratio:4/3;display:grid;place-items:center;background:var(--n-200);font-size:22px;font-weight:800;letter-spacing:.06em;color:var(--n-500)}
+.ficha .prev.img{background:var(--accent-200);color:var(--accent-700)}
+.ficha .cat{position:absolute;left:0;top:0;background:var(--bg);padding:5px 8px;font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--text)}
+.ficha .t{display:block;font-size:13px;font-weight:600;line-height:1.25;padding:11px 12px 0}
+.ficha .s{display:block;font-size:10.5px;font-weight:500;color:var(--n-600);padding:7px 12px 13px}
+.drive{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid var(--n-300);text-decoration:none;color:inherit}
+.elegido{display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid var(--n-300)}
+.elegido .mini{width:38px;height:46px;background:var(--n-200);display:grid;place-items:center;font-size:10px;font-weight:800;color:var(--n-700);flex:none}
+
+/* citas: mes, leyenda y vacunas */
+.semanas{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;padding-bottom:7px;border-bottom:2px solid var(--divider)}
+.semanas span{font-size:10px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;color:var(--n-600);text-align:center}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;background:var(--divider);padding:2px;margin-top:2px}
+.cal button{border:0;background:var(--bg);padding:11px 0 9px;display:flex;flex-direction:column;align-items:center;gap:5px;font-size:13px;font-weight:800;font-variant-numeric:tabular-nums;min-height:44px;color:var(--text)}
+.cal button.off{background:var(--surface)}
+.cal button.sel{background:var(--text);color:var(--bg)}
+.cal .pt{width:6px;height:6px}
+.cal .pt.cita{background:var(--accent-600)}
+.cal .pt.vac{background:var(--text)}
+.cal button.sel .pt.cita,.cal button.sel .pt.vac{background:var(--accent)}
+.leyenda{display:flex;align-items:center;gap:6px;font-size:10px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;color:var(--n-600)}
+.leyenda i{width:6px;height:6px;display:block}
+.leyenda i.cita{background:var(--accent-600)}
+.leyenda i.vac{background:var(--text)}
+.vac{display:grid;grid-template-columns:22px 1fr auto;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid var(--n-300)}
+.vac.hecha{color:var(--n-500)}
+.vac .p{font-size:10.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;background:var(--accent);color:var(--text);padding:6px 8px}
+.vac .d{font-size:10.5px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--n-500)}
