@@ -56,6 +56,14 @@ function hace(desde) {
   return Math.floor(min / 60) + ' h ' + dosD(min % 60);
 }
 
+function mesesDeVida(iso) {
+  const n = new Date(iso), h = new Date();
+  let meses = (h.getFullYear() - n.getFullYear()) * 12 + h.getMonth() - n.getMonth();
+  const ref = new Date(n); ref.setMonth(ref.getMonth() + meses);
+  if (ref > h) meses -= 1;
+  return meses;
+}
+
 function edad(iso) {
   const n = new Date(iso), h = new Date();
   let meses = (h.getFullYear() - n.getFullYear()) * 12 + h.getMonth() - n.getMonth();
@@ -107,6 +115,10 @@ export default function App() {
   const [notifPermiso, setNotifPermiso] = useState(
     typeof Notification !== 'undefined' ? Notification.permission : 'no-disponible'
   );
+  const [ultimaSync, setUltimaSync] = useState(() => {
+    const v = Number(localStorage.getItem('ultima_sync_emma'));
+    return v ? new Date(v) : null;
+  });
   const pulsacion = useRef(null);
   const sostenido = useRef(false);
   const toque = useRef(null);
@@ -127,6 +139,9 @@ export default function App() {
         setPerfil(res.perfil);
         perfilCargado.current = true;
       }
+      const ahoraSync = new Date();
+      setUltimaSync(ahoraSync);
+      try { localStorage.setItem('ultima_sync_emma', String(ahoraSync.getTime())); } catch {}
     });
   }, []);
 
@@ -187,6 +202,7 @@ export default function App() {
 
   useEffect(() => {
     if (!ultimaTeta || avisadoRef.current) return;
+    if (estado && estado.tipo_evento === 'teta' && estado.activo) return; // hay una toma en curso, no avisar
     if (ahora - ultimaTeta.getTime() >= UMBRAL_TETA_MS) {
       avisadoRef.current = true;
       setAvisoTeta(true);
@@ -194,7 +210,7 @@ export default function App() {
         try { new Notification('Alimente al ácaro', { body: 'Pasaron 3 horas desde la última toma.' }); } catch {}
       }
     }
-  }, [ahora, ultimaTeta, notifPermiso]);
+  }, [ahora, ultimaTeta, notifPermiso, estado]);
 
   function notificar(texto, deshacer) {
     setAviso({ texto, deshacer });
@@ -416,7 +432,7 @@ export default function App() {
                 <Icono tipo={r.tipo_evento} s={20} />
                 <span>
                   <span className="t">{r.tipo_evento}</span>
-                  <span className="s">{resumen(r)}</span>
+                  {resumen(r) && <span className="s"> · {resumen(r)}</span>}
                 </span>
                 <span className="h">{hace(fecha(r))}<span>{reloj(fecha(r))}</span></span>
               </button>
@@ -480,15 +496,27 @@ export default function App() {
             </div>
           ))}
 
-          {semana?.peso && (
+          {(semana?.peso || semana?.talla) && (
             <>
-              <div className="rotulo" style={{ margin: '26px 0 10px' }}>Peso</div>
+              <div className="rotulo" style={{ margin: '26px 0 10px' }}>Peso y talla</div>
               <hr className="regla" />
-              <div style={{ padding: '14px 0 16px', borderBottom: '1px solid var(--n-300)' }}>
-                <div style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-.02em', lineHeight: 1 }}>
-                  {semana.peso.kg} <span style={{ fontSize: 16 }}>kg</span>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--n-600)', marginTop: 6 }}>{semana.peso.fecha} · {semana.peso.cm} cm</div>
+              <div style={{ display: 'flex', gap: 20, padding: '14px 0 16px', borderBottom: '1px solid var(--n-300)' }}>
+                {semana?.peso && (
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-.02em', lineHeight: 1 }}>
+                      {semana.peso.kg} <span style={{ fontSize: 16 }}>kg</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--n-600)', marginTop: 6 }}>{semana.peso.fecha}</div>
+                  </div>
+                )}
+                {semana?.talla && (
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-.02em', lineHeight: 1 }}>
+                      {semana.talla.cm} <span style={{ fontSize: 16 }}>cm</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--n-600)', marginTop: 6 }}>{semana.talla.fecha}</div>
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -508,7 +536,7 @@ export default function App() {
         </section>
       )}
 
-      {vista === 'citas' && <PantallaCitas registros={registros} />}
+      {vista === 'citas' && <PantallaCitas registros={registros} perfil={perfil} />}
 
       {vista === 'estudios' && (
         <PantallaEstudios
@@ -566,8 +594,8 @@ export default function App() {
           <div style={{ padding: '12px 0', borderBottom: '1px solid var(--n-300)', fontSize: 13.5 }}>
             Hoja de cálculo conectada · {pendientes ? pendientes + ' pendientes' : 'todo sincronizado'}
           </div>
-          <div style={{ padding: '12px 0', borderBottom: '1px solid var(--n-300)', fontSize: 13.5 }}>
-            {registros.length} registros cargados
+          <div style={{ padding: '12px 0', borderBottom: '1px solid var(--n-300)', fontSize: 13.5, color: 'var(--n-600)' }}>
+            {ultimaSync ? 'Última sincronización: ' + hace(ultimaSync) : 'Todavía no sincronizó'}
           </div>
           <button className="btn btn-secundario" style={{ marginTop: 12 }} onClick={() => { vaciarCola(setPendientes); refrescar(); }}>
             Volver a sincronizar
@@ -946,20 +974,24 @@ function PantallaEstudios({ estudios, error: cargaError, carpeta, categorias, on
 // Las citas se guardan en el celular (no tocan la hoja de cálculo);
 // las vacunas cruzan el esquema oficial con los registros tipo "vacuna".
 const CITAS_LS = 'citas_emma';
+const ESQUEMA_LS = 'esquema_vacunas_emma';
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const DIAS_SEMANA = ['Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sá', 'Do'];
 
-const ESQUEMA = [
-  { nombre: 'BCG', edad: 'Al nacer', mes: 0 },
-  { nombre: 'Hepatitis B', edad: 'Al nacer', mes: 0 },
-  { nombre: 'Pentavalente · 1ª', edad: '2 meses', mes: 2 },
-  { nombre: 'Neumococo · 1ª', edad: '2 meses', mes: 2 },
-  { nombre: 'Rotavirus · 1ª', edad: '2 meses', mes: 2 },
-  { nombre: 'Pentavalente · 2ª', edad: '4 meses', mes: 4 },
-  { nombre: 'Neumococo · 2ª', edad: '4 meses', mes: 4 },
-  { nombre: 'Polio IPV · 2ª', edad: '4 meses', mes: 4 },
-  { nombre: 'Triple viral', edad: '12 meses', mes: 12 },
+// Esquema oficial hasta los 12 meses. Editable desde la app (se guarda en
+// localStorage); esta lista es sólo el punto de partida la primera vez.
+const ESQUEMA_DEFECTO = [
+  { id: 'v1', nombre: 'BCG', mes: 0 },
+  { id: 'v2', nombre: 'Hepatitis B', mes: 0 },
+  { id: 'v3', nombre: 'Pentavalente · 1ª', mes: 2 },
+  { id: 'v4', nombre: 'Neumococo · 1ª', mes: 2 },
+  { id: 'v5', nombre: 'Rotavirus · 1ª', mes: 2 },
+  { id: 'v6', nombre: 'Pentavalente · 2ª', mes: 4 },
+  { id: 'v7', nombre: 'Neumococo · 2ª', mes: 4 },
+  { id: 'v8', nombre: 'Polio IPV · 2ª', mes: 4 },
+  { id: 'v9', nombre: 'Triple viral', mes: 12 },
 ];
+const edadDosis = mes => mes <= 0 ? 'Al nacer' : mes + ' meses';
 
 function leerCitas() {
   try { return JSON.parse(localStorage.getItem(CITAS_LS) || '[]'); } catch { return []; }
@@ -967,12 +999,22 @@ function leerCitas() {
 function guardarCitas(lista) {
   try { localStorage.setItem(CITAS_LS, JSON.stringify(lista)); } catch { }
 }
+function leerEsquema() {
+  try {
+    const guardado = JSON.parse(localStorage.getItem(ESQUEMA_LS) || 'null');
+    return Array.isArray(guardado) && guardado.length ? guardado : ESQUEMA_DEFECTO;
+  } catch { return ESQUEMA_DEFECTO; }
+}
+function guardarEsquema(lista) {
+  try { localStorage.setItem(ESQUEMA_LS, JSON.stringify(lista)); } catch { }
+}
 
-function PantallaCitas({ registros }) {
+function PantallaCitas({ registros, perfil }) {
   const [citas, setCitas] = useState(() => leerCitas().sort((a, b) => a.iso.localeCompare(b.iso)));
+  const [esquema, setEsquema] = useState(() => leerEsquema());
   const [mes, setMes] = useState(() => { const d = new Date(); return { a: d.getFullYear(), m: d.getMonth() }; });
   const [sel, setSel] = useState(null);
-  const [hoja, setHoja] = useState(null); // 'nueva' | cita
+  const [hoja, setHoja] = useState(null); // 'nueva' | 'esquema' | cita | {vacuna: true, ...prefill}
 
   function persistir(lista) {
     const orden = [...lista].sort((a, b) => a.iso.localeCompare(b.iso));
@@ -980,13 +1022,22 @@ function PantallaCitas({ registros }) {
     guardarCitas(orden);
   }
 
+  function persistirEsquema(lista) {
+    setEsquema(lista);
+    guardarEsquema(lista);
+  }
+
   const futuras = citas.filter(c => new Date(c.iso) >= new Date(Date.now() - 6 * 3600000));
   const proxima = futuras[0];
 
-  const vacunas = ESQUEMA.map(v => {
+  const edadMeses = mesesDeVida(perfil?.nacimiento || NACIMIENTO);
+
+  const vacunas = esquema.map(v => {
     const puesta = (registros || []).find(r =>
       r.tipo_evento === 'vacuna' && String(r.dosis || '').toLowerCase().includes(v.nombre.split(' ·')[0].toLowerCase()));
-    return { ...v, puesta };
+    const turnoAgendado = futuras.some(c => c.vacunaId === v.id);
+    const atrasadaSinTurno = !puesta && !turnoAgendado && edadMeses >= v.mes;
+    return { ...v, edad: edadDosis(v.mes), puesta, turnoAgendado, atrasadaSinTurno };
   });
   const aplicadas = vacunas.filter(v => v.puesta).length;
 
@@ -1076,42 +1127,64 @@ function PantallaCitas({ registros }) {
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '26px 0 8px' }}>
           <div className="rotulo">Calendario de vacunas</div>
-          <div style={{ fontSize: 10, color: 'var(--n-500)' }}>{aplicadas} de {vacunas.length} aplicadas</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ fontSize: 10, color: 'var(--n-500)' }}>{aplicadas} de {vacunas.length} aplicadas</div>
+            <button onClick={() => setHoja('esquema')} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 2 }} aria-label="Editar esquema de vacunas">
+              <Icono tipo="editar" s={15} />
+            </button>
+          </div>
         </div>
         <hr className="regla" />
-        {vacunas.map(v => (
-          <div key={v.nombre} className={'vac' + (v.puesta ? ' hecha' : '')}>
-            <Icono tipo="vacuna" s={20} />
-            <span>
-              <span style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>{v.nombre}</span>
-              <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--n-600)', marginTop: 7 }}>{v.edad}</span>
-            </span>
-            {v.puesta
-              ? <span className="d">{new Date(v.puesta.iso || v.puesta.timestamp).toLocaleDateString('es', { day: 'numeric', month: 'short' })}</span>
-              : <span className="p">Pendiente</span>}
-          </div>
-        ))}
+        {vacunas.map(v => {
+          const contenido = (
+            <>
+              <Icono tipo="vacuna" s={20} />
+              <span>
+                <span style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>{v.nombre}</span>
+                <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--n-600)', marginTop: 7 }}>
+                  {v.edad}{v.atrasadaSinTurno ? ' · sin turno agendado' : ''}
+                </span>
+              </span>
+              {v.puesta
+                ? <span className="d">{new Date(v.puesta.iso || v.puesta.timestamp).toLocaleDateString('es', { day: 'numeric', month: 'short' })}</span>
+                : <span className={'p' + (v.atrasadaSinTurno ? ' urgente' : '')}>{v.atrasadaSinTurno ? 'Agendar' : 'Pendiente'}</span>}
+            </>
+          );
+          return v.atrasadaSinTurno ? (
+            <button key={v.id} className="vac" style={{ width: '100%', border: 0, background: 'none', textAlign: 'left' }}
+                    onClick={() => setHoja({ prefillVacuna: v })}>
+              {contenido}
+            </button>
+          ) : (
+            <div key={v.id} className={'vac' + (v.puesta ? ' hecha' : '')}>{contenido}</div>
+          );
+        })}
       </div>
 
-      {hoja && (
+      {hoja && hoja !== 'esquema' && (
         <HojaCita
-          cita={hoja === 'nueva' ? null : hoja}
+          cita={hoja && hoja.prefillVacuna ? null : (hoja === 'nueva' ? null : hoja)}
+          prefillVacuna={hoja && hoja.prefillVacuna}
           onCerrar={() => setHoja(null)}
-          onGuardar={c => { persistir(hoja === 'nueva' ? [...citas, c] : citas.map(x => x.id === c.id ? c : x)); setHoja(null); }}
+          onGuardar={c => { persistir((hoja === 'nueva' || hoja.prefillVacuna) ? [...citas, c] : citas.map(x => x.id === c.id ? c : x)); setHoja(null); }}
           onBorrar={id => { persistir(citas.filter(x => x.id !== id)); setHoja(null); }}
         />
+      )}
+      {hoja === 'esquema' && (
+        <HojaEsquema esquema={esquema} onGuardar={persistirEsquema} onCerrar={() => setHoja(null)} />
       )}
     </section>
   );
 }
 
-function HojaCita({ cita, onCerrar, onGuardar, onBorrar }) {
-  const [titulo, setTitulo] = useState(cita ? cita.titulo : '');
+function HojaCita({ cita, prefillVacuna, onCerrar, onGuardar, onBorrar }) {
+  const [titulo, setTitulo] = useState(cita ? cita.titulo : (prefillVacuna ? 'Turno · ' + prefillVacuna.nombre : ''));
   const [cuando, setCuando] = useState(cita ? aLocal(new Date(cita.iso)) : aLocal(new Date()));
   const [lugar, setLugar] = useState(cita ? cita.lugar || '' : '');
   const [nota, setNota] = useState(cita ? cita.nota || '' : '');
   const [aviso, setAviso] = useState(cita ? cita.aviso || '1 día antes' : '1 día antes');
-  const [vacuna, setVacuna] = useState(cita ? !!cita.vacuna : false);
+  const [vacuna, setVacuna] = useState(cita ? !!cita.vacuna : !!prefillVacuna);
+  const vacunaId = cita ? cita.vacunaId : (prefillVacuna ? prefillVacuna.id : null);
 
   return (
     <>
@@ -1156,7 +1229,7 @@ function HojaCita({ cita, onCerrar, onGuardar, onBorrar }) {
         </div>
         <div className="campo" style={{ borderBottom: 0 }}>
           <span className="rotulo">Nota</span>
-          <input className="entrada-texto" placeholder="Opcional · ej. preguntar por el reflujo" value={nota} onChange={e => setNota(e.target.value)} />
+          <textarea className="entrada-texto" rows={3} placeholder="Opcional · ej. preguntar por el reflujo" value={nota} onChange={e => setNota(e.target.value)} />
         </div>
         <div className="acciones">
           <button onClick={() => (cita ? onBorrar(cita.id) : onCerrar())}>{cita ? 'Borrar' : 'Cancelar'}</button>
@@ -1164,9 +1237,71 @@ function HojaCita({ cita, onCerrar, onGuardar, onBorrar }) {
                   onClick={() => onGuardar({
                     id: cita ? cita.id : 'c' + Date.now(),
                     titulo: titulo.trim(), iso: deLocalISO(cuando), lugar, nota, aviso, vacuna,
+                    vacunaId: vacuna ? vacunaId : null,
                   })}>
             Guardar
           </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function HojaEsquema({ esquema, onGuardar, onCerrar }) {
+  const [lista, setLista] = useState(esquema);
+  const [nombreNuevo, setNombreNuevo] = useState('');
+  const [mesNuevo, setMesNuevo] = useState('');
+
+  function actualizar(nueva) {
+    setLista(nueva);
+    onGuardar(nueva);
+  }
+
+  function agregar() {
+    if (!nombreNuevo.trim()) return;
+    actualizar([...lista, { id: 'v' + Date.now(), nombre: nombreNuevo.trim(), mes: Number(mesNuevo) || 0 }]
+      .sort((a, b) => a.mes - b.mes));
+    setNombreNuevo('');
+    setMesNuevo('');
+  }
+
+  return (
+    <>
+      <div className="fondo" onClick={onCerrar} />
+      <div className="hoja" role="dialog" aria-label="Esquema de vacunas">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+          <div>
+            <div className="kicker">Editar</div>
+            <h2>Esquema de vacunas</h2>
+          </div>
+          <button onClick={onCerrar} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Cerrar">
+            <Icono tipo="cerrar" s={22} />
+          </button>
+        </div>
+        <hr className="regla" style={{ margin: '16px 0 0' }} />
+        <p style={{ fontSize: 11.5, color: 'var(--n-600)', margin: '12px 0 0' }}>
+          Ajustá el nombre y la edad (en meses) de cada dosis según el esquema que te haya dado el pediatra.
+        </p>
+        {lista.map((v, i) => (
+          <div key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '13px 0', borderBottom: '1px solid var(--n-300)' }}>
+            <input className="entrada-texto" style={{ flex: 1 }} value={v.nombre}
+                   onChange={e => actualizar(lista.map(x => x.id === v.id ? { ...x, nombre: e.target.value } : x))} />
+            <input className="entrada-texto" type="number" inputMode="numeric" style={{ width: 64 }} value={v.mes}
+                   onChange={e => actualizar(lista.map(x => x.id === v.id ? { ...x, mes: Number(e.target.value) || 0 } : x))} />
+            <span style={{ fontSize: 10.5, color: 'var(--n-500)' }}>m</span>
+            <button onClick={() => actualizar(lista.filter(x => x.id !== v.id))}
+                    style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label={'Borrar ' + v.nombre}>
+              <Icono tipo="cerrar" s={16} />
+            </button>
+          </div>
+        ))}
+        {!lista.length && <p style={{ color: 'var(--n-600)', fontSize: 13 }}>No hay dosis en el esquema.</p>}
+        <div style={{ display: 'flex', gap: 6, marginTop: 14 }}>
+          <input className="entrada-texto" placeholder="Nueva dosis, ej. Refuerzo · 18 m" value={nombreNuevo}
+                 onChange={e => setNombreNuevo(e.target.value)} style={{ flex: 1 }} />
+          <input className="entrada-texto" type="number" inputMode="numeric" placeholder="Mes" value={mesNuevo}
+                 onChange={e => setMesNuevo(e.target.value)} style={{ width: 64 }} />
+          <button className="btn btn-primario" style={{ width: 'auto', padding: '0 18px' }} onClick={agregar}>Agregar</button>
         </div>
       </div>
     </>
@@ -1254,7 +1389,7 @@ function HojaDetalle({ hoja, onCerrar, onGuardar, onBorrar, onReanudar }) {
 
         <div className="campo" style={{ borderBottom: 0 }}>
           <span className="rotulo">Nota</span>
-          <input className="entrada-texto" placeholder="Opcional"
+          <textarea className="entrada-texto" rows={3} placeholder="Opcional"
                  value={valores.notas || ''} onChange={e => setValores(v => ({ ...v, notas: e.target.value }))} />
         </div>
 

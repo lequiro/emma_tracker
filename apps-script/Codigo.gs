@@ -275,11 +275,16 @@ function doGet(e) {
     }
     var pesos = regs.filter(function (r) { return r.peso_kg; });
     var peso = pesos.length ? {
-      kg: pesos[0].peso_kg, cm: pesos[0].talla_cm || '',
+      kg: pesos[0].peso_kg,
       fecha: Utilities.formatDate(new Date(pesos[0].iso), Session.getScriptTimeZone(), 'dd/MM/yyyy')
     } : null;
+    var tallas = regs.filter(function (r) { return r.talla_cm; });
+    var talla = tallas.length ? {
+      cm: tallas[0].talla_cm,
+      fecha: Utilities.formatDate(new Date(tallas[0].iso), Session.getScriptTimeZone(), 'dd/MM/yyyy')
+    } : null;
     return json_({
-      ok: true, dias: dias, peso: peso,
+      ok: true, dias: dias, peso: peso, talla: talla,
       max_tomas: Math.max.apply(null, dias.map(function (d) { return d.tomas; }).concat([1]))
     });
   }

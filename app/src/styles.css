@@ -104,9 +104,10 @@ button{cursor:pointer}
 .opciones{display:flex;gap:2px;background:var(--divider);padding:2px}
 .opciones button{flex:1;border:0;background:var(--bg);padding:13px 8px;text-align:left;font-size:12px;font-weight:800}
 .opciones button.on{background:var(--text);color:var(--bg)}
-.entrada-texto{width:100%;border:1px solid var(--divider);background:#f8f4f4;padding:12px;font-size:14px;color:var(--text)}
+.entrada-texto{width:100%;border:1px solid var(--divider);background:#f8f4f4;padding:12px;font-size:16px;color:var(--text)}
+textarea.entrada-texto{resize:vertical;min-height:64px;line-height:1.4;font-family:inherit}
 .acciones{display:grid;grid-template-columns:1fr 2fr;gap:2px;background:var(--divider);padding:2px;margin-top:18px}
-.acciones button{border:0;padding:16px 14px;text-align:left;font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;background:var(--bg)}
+.acciones button{border:0;padding:16px 14px;text-align:left;font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;background:var(--bg);color:var(--text)}
 .acciones button.guardar{background:var(--accent);color:var(--text)}
 
 /* estudios */
@@ -181,4 +182,5 @@ button{cursor:pointer}
 .vac{display:grid;grid-template-columns:22px 1fr auto;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid var(--n-300)}
 .vac.hecha{color:var(--n-500)}
 .vac .p{font-size:10.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;background:var(--accent);color:var(--text);padding:6px 8px}
+.vac .p.urgente{background:var(--text);color:var(--bg)}
 .vac .d{font-size:10.5px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--n-500)}
