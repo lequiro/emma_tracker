@@ -139,10 +139,33 @@ function doPost(e) {
       return json_({ ok: true, mensaje: 'Hora de inicio actualizada', estado: estAct });
     }
 
+    if (b.accion === 'reanudar') {
+      var estR = estado_();
+      if (estR.activo) return json_({ ok: false, mensaje: 'Ya hay un cronómetro en marcha' });
+      var hR = hoja_(), shR = hR.sh, colsR = hR.cols;
+      var filaDatos = shR.getRange(b.fila, 1, 1, colsR.length).getValues()[0];
+      var duracionPrevia = Number(filaDatos[indice_(colsR, 'duracion_minutos') - 1]) || 0;
+      var nuevoEstado = {
+        activo: true, tipo_evento: b.tipo_evento, inicio: new Date().toISOString(),
+        reanudar_fila: b.fila, duracion_previa: duracionPrevia
+      };
+      guardarEstado_(nuevoEstado);
+      return json_({ ok: true, mensaje: 'Retomando ' + b.tipo_evento, estado: nuevoEstado });
+    }
+
     if (b.accion === 'detener') {
       var est = estado_();
       if (!est.activo) return json_({ ok: false, mensaje: 'No había nada en marcha' });
       var min = Math.max(1, Math.round((new Date() - new Date(est.inicio)) / 60000));
+      // Si se retomó un registro guardado, se suma el tiempo a ESA fila en
+      // vez de crear una nueva (no queda cerrada, solo se extiende).
+      if (est.reanudar_fila) {
+        var hD = hoja_(), shD = hD.sh, colsD = hD.cols;
+        var totalMin = (Number(est.duracion_previa) || 0) + min;
+        shD.getRange(est.reanudar_fila, indice_(colsD, 'duracion_minutos')).setValue(totalMin);
+        guardarEstado_({ activo: false });
+        return json_({ ok: true, mensaje: est.tipo_evento + ': ' + totalMin + ' min (retomado)' });
+      }
       var datos = { tipo_evento: est.tipo_evento, duracion_minutos: min };
       COLUMNAS.forEach(function (c) { if (b[c] !== undefined) datos[c] = b[c]; });
       escribir_(datos);
