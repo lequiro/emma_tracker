@@ -87,6 +87,21 @@ function edad(iso) {
 
 const fecha = r => new Date(r.iso || r.timestamp);
 
+// Para teta/sueño el timestamp guardado es la hora de FIN (se escribe recién
+// al parar el cronómetro); la hora de inicio se reconstruye restando la
+// duración guardada.
+const inicioDe = r => new Date(fecha(r).getTime() - (Number(r.duracion_minutos) || 0) * 60000);
+
+const SECCIONES = [
+  { id: 'registrar', txt: 'Registrar', icono: 'registrar' },
+  { id: 'hoy', txt: 'Hoy', icono: 'reloj' },
+  { id: 'semana', txt: 'Semana', icono: 'barras' },
+  { id: 'citas', txt: 'Turnos', icono: 'cita' },
+  { id: 'vacunas', txt: 'Medicación', icono: 'vacuna' },
+  { id: 'estudios', txt: 'Estudios', icono: 'documento' },
+  { id: 'ajustes', txt: 'Ajustes', icono: 'ajustes' },
+];
+
 // datetime-local usa hora local sin zona horaria; convertimos en ambos sentidos.
 function aLocal(d) {
   const p = n => String(n).padStart(2, '0');
@@ -109,6 +124,7 @@ function resumen(r) {
 
 export default function App() {
   const [vista, setVista] = useState('registrar');
+  const [menuAbierto, setMenuAbierto] = useState(false);
   const [registros, setRegistros] = useState([]);
   const [estado, setEstado] = useState(null);        // {tipo_evento, inicio} del servidor
   const [ahora, setAhora] = useState(Date.now());
@@ -494,17 +510,24 @@ export default function App() {
             {registrosDiarios.length > 0 && (
               <div style={{ fontSize: 10, color: 'var(--n-500)', padding: '8px 0 0' }}>Mantén pulsado para editar</div>
             )}
-            {registrosDiarios.slice(0, 6).map(r => (
-              <button key={r.fila} className="entrada"
-                      {...mantenerParaAbrir(() => setHoja({ tipo: r.tipo_evento, modo: 'editar', fila: r.fila, valores: r }))}>
-                <Icono tipo={r.tipo_evento} s={20} />
-                <span>
-                  <span className="t">{r.tipo_evento}</span>
-                  {resumen(r) && <span className="s"> · {resumen(r)}</span>}
-                </span>
-                <span className="h">{hace(fecha(r))}<span>{reloj(fecha(r))}</span></span>
-              </button>
-            ))}
+            {registrosDiarios.slice(0, 6).map(r => {
+              const esCronometrado = r.tipo_evento === 'teta' || r.tipo_evento === 'sueño';
+              return (
+                <button key={r.fila} className="entrada"
+                        {...mantenerParaAbrir(() => setHoja({ tipo: r.tipo_evento, modo: 'editar', fila: r.fila, valores: r }))}>
+                  <Icono tipo={r.tipo_evento} s={20} />
+                  <span>
+                    <span className="t">{r.tipo_evento}</span>
+                    {resumen(r) && <span className="s"> · {resumen(r)}</span>}
+                  </span>
+                  {esCronometrado ? (
+                    <span className="h">{reloj(inicioDe(r))}<span>→ {reloj(fecha(r))}</span></span>
+                  ) : (
+                    <span className="h">{hace(fecha(r))}<span>{reloj(fecha(r))}</span></span>
+                  )}
+                </button>
+              );
+            })}
             {!registrosDiarios.length && <p style={{ color: 'var(--n-600)', fontSize: 13 }}>Sin registros todavía.</p>}
           </div>
         </section>
@@ -762,14 +785,38 @@ export default function App() {
         </div>
       )}
 
-      <nav className="tabs">
-        {[['registrar', 'Registrar'], ['hoy', 'Hoy'], ['semana', 'Semana'], ['citas', 'Citas'], ['vacunas', 'Vacunas'], ['estudios', 'Estudios'], ['ajustes', 'Ajustes']].map(([id, txt]) => (
-          <button key={id} className={vista === id ? 'on' : ''} onClick={() => setVista(id)}>
-            <Icono tipo={{ registrar: 'registrar', hoy: 'reloj', semana: 'barras', citas: 'cita', vacunas: 'vacuna', estudios: 'documento', ajustes: 'ajustes' }[id]} s={21} />
-            {txt}
-          </button>
-        ))}
-      </nav>
+      <button className="navbar" onClick={() => setMenuAbierto(true)} aria-haspopup="true" aria-expanded={menuAbierto}>
+        <span className="navbar-actual">
+          <Icono tipo={(SECCIONES.find(s => s.id === vista) || SECCIONES[0]).icono} s={20} />
+          {(SECCIONES.find(s => s.id === vista) || SECCIONES[0]).txt}
+        </span>
+        <span className="navbar-flecha">▾</span>
+      </button>
+
+      {menuAbierto && (
+        <>
+          <div className="fondo" onClick={() => setMenuAbierto(false)} />
+          <div className="hoja" role="dialog" aria-label="Menú">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+              <div>
+                <div className="kicker">Ir a</div>
+                <h2>Menú</h2>
+              </div>
+              <button onClick={() => setMenuAbierto(false)} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Cerrar">
+                <Icono tipo="cerrar" s={22} />
+              </button>
+            </div>
+            <hr className="regla" style={{ margin: '16px 0 0' }} />
+            {SECCIONES.map(s => (
+              <button key={s.id} className={'menu-item' + (vista === s.id ? ' on' : '')}
+                      onClick={() => { setVista(s.id); setMenuAbierto(false); }}>
+                <Icono tipo={s.icono} s={20} />
+                <span>{s.txt}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -777,7 +824,6 @@ export default function App() {
 const MAX_BYTES_ARCHIVO = 15 * 1024 * 1024;
 const CATEGORIA_DEFECTO = ['Ecografía', 'Análisis', 'Vacunas', 'Pediatra', 'Otro'];
 
-const esImagen = nombre => /\.(jpe?g|png|heic|webp)$/i.test(nombre || '');
 const extension = nombre => (String(nombre).split('.').pop() || '?').toUpperCase().slice(0, 4);
 
 // Los estudios son lo primero de la pantalla: fichas en dos columnas.
@@ -862,16 +908,26 @@ function PantallaEstudios({ estudios, error: cargaError, carpeta, categorias, on
 
       <div className="pad">
         {visibles.length > 0 && (
-          <div className="fichas">
+          <div className="pila">
             {visibles.map(r => (
-              <button key={r.fila} className="ficha" onClick={() => setHoja(r)}>
-                <span className={'prev' + (esImagen(r.archivo_nombre) ? ' img' : '')}>
+              <div key={r.fila} className="archivo" role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+                   onClick={() => window.open(r.archivo_url, '_blank')}
+                   onKeyDown={e => { if (e.key === 'Enter') window.open(r.archivo_url, '_blank'); }}>
+                <span className="mini" style={{ width: 38, height: 38, background: 'var(--n-200)', display: 'grid', placeItems: 'center', fontSize: 9.5, fontWeight: 800, color: 'var(--n-700)' }}>
                   {extension(r.archivo_nombre)}
-                  <span className="cat">{r.archivo_categoria || 'Otro'}</span>
                 </span>
-                <span className="t">{r.notas || r.archivo_nombre}</span>
-                <span className="s">{r.iso ? new Date(r.iso).toLocaleDateString('es') : ''}</span>
-              </button>
+                <span>
+                  <span className="t">{r.notas || r.archivo_nombre}</span>
+                  <span className="s">
+                    {r.archivo_categoria || 'Otro'} · {r.iso ? new Date(r.iso).toLocaleDateString('es') : ''}
+                  </span>
+                </span>
+                <button onClick={e => { e.stopPropagation(); setHoja(r); }}
+                        style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }}
+                        aria-label={'Gestionar ' + (r.notas || r.archivo_nombre)}>
+                  <Icono tipo="editar" s={16} />
+                </button>
+              </div>
             ))}
           </div>
         )}
@@ -1153,8 +1209,11 @@ function PantallaCitas({ registros, perfil, esquema, medicamentos, onVerVacunas 
   }
 
   const corte = new Date(Date.now() - 6 * 3600000);
-  const futuras = citas.filter(c => new Date(c.iso) >= corte);
-  const pasadas = citas.filter(c => new Date(c.iso) < corte).slice().reverse();
+  // Se descartan citas con fecha inválida en vez de dejar que desaparezcan
+  // en silencio de ambas listas (ni futuras ni pasadas).
+  const conFecha = citas.filter(c => !isNaN(new Date(c.iso).getTime()));
+  const futuras = conFecha.filter(c => new Date(c.iso) >= corte);
+  const pasadas = conFecha.filter(c => new Date(c.iso) < corte).slice().reverse();
   const proxima = futuras[0];
 
   const nacimiento = perfil?.nacimiento || NACIMIENTO;
@@ -1173,11 +1232,13 @@ function PantallaCitas({ registros, perfil, esquema, medicamentos, onVerVacunas 
     <section className="pantalla">
       {proxima ? (
         <div className="marcha">
-          <div className="et"><Icono tipo="cita" s={15} /> Próxima cita · {diasFalta(proxima.iso) <= 0 ? 'hoy' : 'en ' + diasFalta(proxima.iso) + ' días'}</div>
+          <div className="et"><Icono tipo="cita" s={15} /> Próximo turno · {diasFalta(proxima.iso) <= 0 ? 'hoy' : 'en ' + diasFalta(proxima.iso) + ' días'}</div>
           <h2 style={{ fontSize: 26, fontWeight: 800, letterSpacing: '-.02em', margin: '10px 0 0', lineHeight: 1.05 }}>{proxima.titulo}</h2>
           <div style={{ fontSize: 12, fontWeight: 500, marginTop: 7, lineHeight: 1.5 }}>
             {new Date(proxima.iso).toLocaleDateString('es', { weekday: 'short', day: 'numeric', month: 'short' })} · {reloj(new Date(proxima.iso))}
             {proxima.lugar ? <><br />{proxima.lugar}</> : null}
+            {proxima.doctora ? <><br />{proxima.doctora}</> : null}
+            {proxima.telefono ? <><br /><a href={'tel:' + proxima.telefono} style={{ color: 'inherit' }}>{proxima.telefono}</a></> : null}
           </div>
           <div className="acciones" style={{ marginTop: 16 }}>
             <button onClick={() => setHoja(proxima)}>Ver detalle</button>
@@ -1213,7 +1274,7 @@ function PantallaCitas({ registros, perfil, esquema, medicamentos, onVerVacunas 
           })}
         </div>
         <div style={{ display: 'flex', gap: 16, marginTop: 10, flexWrap: 'wrap' }}>
-          <span className="leyenda"><i className="cita" />Cita</span>
+          <span className="leyenda"><i className="cita" />Turno</span>
           <span className="leyenda"><i className="vac" />Vacuna agendada</span>
           <span className="leyenda"><i className="alerta" />Vacuna sin turno</span>
           <span className="leyenda"><i className="med" />Medicación</span>
@@ -1232,15 +1293,17 @@ function PantallaCitas({ registros, perfil, esquema, medicamentos, onVerVacunas 
             <span className="cuerpo">
               <span style={{ flex: 1 }}>
                 <span style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>{c.titulo}</span>
-                <span style={{ display: 'block', fontSize: 10.5, fontWeight: 500, color: 'var(--n-600)', marginTop: 6 }}>{c.lugar || 'Sin lugar'}</span>
+                <span style={{ display: 'block', fontSize: 10.5, fontWeight: 500, color: 'var(--n-600)', marginTop: 6 }}>
+                  {[c.lugar, c.doctora].filter(Boolean).join(' · ') || 'Sin lugar'}
+                </span>
               </span>
               <span style={{ fontSize: 12, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{reloj(new Date(c.iso))}</span>
             </span>
           </button>
         ))}
-        {!futuras.length && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>No hay citas anotadas.</p>}
+        {!futuras.length && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>No hay turnos anotados.</p>}
         <button className="btn btn-secundario" style={{ marginTop: 14 }} onClick={() => setHoja('nueva')}>
-          <Icono tipo="mas" s={16} /> Agregar cita
+          <Icono tipo="mas" s={16} /> Agregar turno
         </button>
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '26px 0 8px' }}>
@@ -1253,7 +1316,7 @@ function PantallaCitas({ registros, perfil, esquema, medicamentos, onVerVacunas 
           )}
         </div>
         <hr className="regla" />
-        {!pasadas.length && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Todavía no hay citas pasadas.</p>}
+        {!pasadas.length && <p style={{ color: 'var(--n-600)', fontSize: 13, marginTop: 10 }}>Todavía no hay turnos pasados.</p>}
         {(verHistorial ? pasadas : pasadas.slice(0, 3)).map(c => (
           <button key={c.id} className="linea" onClick={() => setHoja(c)}>
             <span className="hora" style={{ fontSize: 15 }}>
@@ -1266,7 +1329,7 @@ function PantallaCitas({ registros, perfil, esquema, medicamentos, onVerVacunas 
               <span style={{ flex: 1 }}>
                 <span style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>{c.titulo}</span>
                 <span style={{ display: 'block', fontSize: 10.5, fontWeight: 500, color: 'var(--n-600)', marginTop: 6 }}>
-                  {c.indicaciones ? 'Con indicaciones' : (c.lugar || 'Sin lugar')}
+                  {[c.doctora, c.indicaciones ? 'Con indicaciones' : (c.lugar || 'Sin lugar')].filter(Boolean).join(' · ')}
                 </span>
               </span>
             </span>
@@ -1314,6 +1377,8 @@ function HojaCita({ cita, prefillVacuna, onCerrar, onGuardar, onBorrar }) {
   const [titulo, setTitulo] = useState(cita ? cita.titulo : (prefillVacuna ? 'Turno · ' + prefillVacuna.nombre : ''));
   const [cuando, setCuando] = useState(cita ? aLocal(new Date(cita.iso)) : aLocal(new Date()));
   const [lugar, setLugar] = useState(cita ? cita.lugar || '' : '');
+  const [doctora, setDoctora] = useState(cita ? cita.doctora || '' : '');
+  const [telefono, setTelefono] = useState(cita ? cita.telefono || '' : '');
   const [nota, setNota] = useState(cita ? cita.nota || '' : '');
   const [indicaciones, setIndicaciones] = useState(cita ? cita.indicaciones || '' : '');
   const [aviso, setAviso] = useState(cita ? cita.aviso || '1 día antes' : '1 día antes');
@@ -1324,11 +1389,11 @@ function HojaCita({ cita, prefillVacuna, onCerrar, onGuardar, onBorrar }) {
   return (
     <>
       <div className="fondo" onClick={onCerrar} />
-      <div className="hoja" role="dialog" aria-label="Cita">
+      <div className="hoja" role="dialog" aria-label="Turno">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
           <div>
-            <div className="kicker">{cita ? 'Editar' : 'Nueva'}</div>
-            <h2 style={{ textTransform: 'none' }}>{cita ? cita.titulo : 'Cita'}</h2>
+            <div className="kicker">{cita ? 'Editar' : 'Nuevo'}</div>
+            <h2 style={{ textTransform: 'none' }}>{cita ? cita.titulo : 'Turno'}</h2>
           </div>
           <button onClick={onCerrar} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Cerrar">
             <Icono tipo="cerrar" s={22} />
@@ -1345,7 +1410,15 @@ function HojaCita({ cita, prefillVacuna, onCerrar, onGuardar, onBorrar }) {
         </div>
         <div className="campo">
           <span className="rotulo">Dónde</span>
-          <input className="entrada-texto" placeholder="Consultorio, dirección o médico" value={lugar} onChange={e => setLugar(e.target.value)} />
+          <input className="entrada-texto" placeholder="Consultorio o dirección" value={lugar} onChange={e => setLugar(e.target.value)} />
+        </div>
+        <div className="campo">
+          <span className="rotulo">Doctora / médico</span>
+          <input className="entrada-texto" placeholder="Opcional · ej. Dra. Pérez" value={doctora} onChange={e => setDoctora(e.target.value)} />
+        </div>
+        <div className="campo">
+          <span className="rotulo">Teléfono</span>
+          <input className="entrada-texto" type="tel" placeholder="Opcional" value={telefono} onChange={e => setTelefono(e.target.value)} />
         </div>
         <div className="campo">
           <span className="rotulo">Tipo</span>
@@ -1376,7 +1449,7 @@ function HojaCita({ cita, prefillVacuna, onCerrar, onGuardar, onBorrar }) {
           <button className="guardar" disabled={!titulo.trim()}
                   onClick={() => onGuardar({
                     id: cita ? cita.id : 'c' + Date.now(),
-                    titulo: titulo.trim(), iso: deLocalISO(cuando), lugar, nota, indicaciones, aviso, vacuna,
+                    titulo: titulo.trim(), iso: deLocalISO(cuando), lugar, doctora, telefono, nota, indicaciones, aviso, vacuna,
                     vacunaId: vacuna ? vacunaId : null,
                   })}>
             Guardar
@@ -1408,7 +1481,7 @@ function PantallaVacunas({ registros, perfil, esquema, onEsquemaChange, medicame
 
   const nacimiento = perfil?.nacimiento || NACIMIENTO;
   const edadMeses = mesesDeVida(nacimiento);
-  const futuras = citas.filter(c => new Date(c.iso) >= new Date(Date.now() - 6 * 3600000));
+  const futuras = citas.filter(c => !isNaN(new Date(c.iso).getTime()) && new Date(c.iso) >= new Date(Date.now() - 6 * 3600000));
   const vacunas = vacunasConEstado(esquema, registros, futuras, edadMeses);
   const aplicadas = vacunas.filter(v => v.puesta).length;
   const grupos = agruparVacunas(vacunas);
