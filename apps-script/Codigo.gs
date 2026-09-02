@@ -11,6 +11,7 @@
  *   crema · dosis · peso_kg · talla_cm · cliente_hora           (nuevas)
  *   archivo_url · archivo_nombre                                (estudios/archivos)
  *
+ 
  * El perfil (nombre y fecha de nacimiento) y los archivos subidos ("estudios")
  * viven aparte: el perfil en PropertiesService, los archivos en una carpeta de
  * Drive ("Emma · estudios") con el link guardado en la fila del registro.
@@ -114,7 +115,9 @@ function autorizarDrive() {
 function escribir_(datos) {
   var h = hoja_(), sh = h.sh, cols = h.cols;
   var fila = new Array(cols.length).fill('');
-  fila[indice_(cols, 'timestamp') - 1] = new Date();
+  // Si viene un timestamp explícito (p. ej. hora de inicio de teta/sueño, o
+  // un alta manual) se respeta; si no, se usa el momento actual del servidor.
+  fila[indice_(cols, 'timestamp') - 1] = datos.timestamp ? new Date(datos.timestamp) : new Date();
   cols.forEach(function (c, j) { if (datos[c] !== undefined && c !== 'timestamp') fila[j] = datos[c]; });
   sh.appendRow(fila);
   return sh.getLastRow();
@@ -166,7 +169,10 @@ function doPost(e) {
         guardarEstado_({ activo: false });
         return json_({ ok: true, mensaje: est.tipo_evento + ': ' + totalMin + ' min (retomado)' });
       }
-      var datos = { tipo_evento: est.tipo_evento, duracion_minutos: min };
+      // El timestamp guardado es la hora de INICIO (no la de fin, que es
+      // cuando se llama a esta acción); la hora de fin se calcula en el
+      // cliente sumando duracion_minutos.
+      var datos = { tipo_evento: est.tipo_evento, duracion_minutos: min, timestamp: est.inicio };
       COLUMNAS.forEach(function (c) { if (b[c] !== undefined) datos[c] = b[c]; });
       escribir_(datos);
       guardarEstado_({ activo: false });
@@ -240,6 +246,41 @@ function doPost(e) {
   }
 }
 
+// EJECUTAR UNA SOLA VEZ A MANO (▶ en el editor, con esta función elegida en
+// el desplegable de arriba) después de implementar esta versión del backend.
+// Antes, el timestamp de teta/sueño guardaba la hora de FIN; de acá en más
+// guarda la hora de INICIO. Esta función corrige las filas viejas de
+// teta/sueño restándoles su propia duración, para que todo el historial
+// quede consistente. No toca ningún otro tipo de evento. Tiene guarda para
+// no aplicarse dos veces por error.
+function migrarInicioTetaSueno() {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('migrado_inicio_v1') === 'listo') {
+    Logger.log('Ya se había migrado antes. No se hizo nada.');
+    return;
+  }
+  var h = hoja_(), sh = h.sh, cols = h.cols;
+  var colTs = indice_(cols, 'timestamp');
+  var colTipo = indice_(cols, 'tipo_evento');
+  var colDur = indice_(cols, 'duracion_minutos');
+  var ultima = sh.getLastRow();
+  var cambiadas = 0;
+  if (ultima >= 2) {
+    var filas = sh.getRange(2, 1, ultima - 1, cols.length).getValues();
+    for (var i = 0; i < filas.length; i++) {
+      var tipo = filas[i][colTipo - 1];
+      if (tipo !== 'teta' && tipo !== 'sueño') continue;
+      var ts = filas[i][colTs - 1];
+      var dur = Number(filas[i][colDur - 1]) || 0;
+      if (!(ts instanceof Date) || !dur) continue;
+      sh.getRange(2 + i, colTs).setValue(new Date(ts.getTime() - dur * 60000));
+      cambiadas++;
+    }
+  }
+  props.setProperty('migrado_inicio_v1', 'listo');
+  Logger.log('Migración lista: ' + cambiadas + ' filas de teta/sueño actualizadas.');
+}
+
 function doGet(e) {
   var action = (e.parameter.action || 'inicial');
 
@@ -258,10 +299,11 @@ function doGet(e) {
   }
 
   if (action === 'semana') {
-    var regs = leerRegistros_(600);
+    var offset = Math.max(0, Number(e.parameter.offset) || 0); // semanas hacia atrás; 0 = semana actual
+    var regs = leerRegistros_(3000);
     var dias = [], nombres = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
     for (var i = 6; i >= 0; i--) {
-      var d = new Date(); d.setDate(d.getDate() - i); d.setHours(0, 0, 0, 0);
+      var d = new Date(); d.setDate(d.getDate() - i - offset * 7); d.setHours(0, 0, 0, 0);
       var fin = new Date(d); fin.setDate(d.getDate() + 1);
       var delDia = regs.filter(function (r) { var t = new Date(r.iso); return t >= d && t < fin; });
       dias.push({
@@ -284,7 +326,7 @@ function doGet(e) {
       fecha: Utilities.formatDate(new Date(tallas[0].iso), Session.getScriptTimeZone(), 'dd/MM/yyyy')
     } : null;
     return json_({
-      ok: true, dias: dias, peso: peso, talla: talla,
+      ok: true, offset: offset, dias: dias, peso: peso, talla: talla,
       max_tomas: Math.max.apply(null, dias.map(function (d) { return d.tomas; }).concat([1]))
     });
   }
