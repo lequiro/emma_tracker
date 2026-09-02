@@ -31,6 +31,7 @@ export const Iconos = {
   estrellaLlena: p => <S {...p} w={0}><path d="M12 2.5l2.9 6.1 6.6.7-4.9 4.6 1.3 6.6L12 17l-5.9 3.5 1.3-6.6-4.9-4.6 6.6-.7z" fill="currentColor" /></S>,
   estrellaVacia: p => <S {...p} w={1.6}><path d="M12 2.5l2.9 6.1 6.6.7-4.9 4.6 1.3 6.6L12 17l-5.9 3.5 1.3-6.6-4.9-4.6 6.6-.7z" /></S>,
   medicamento: p => <S {...p}><path d="M6 3.5l4.5 4.5" /><rect x="3.5" y="7.5" width="12" height="6" rx="3" transform="rotate(-45 9.5 10.5)" /><path d="M8 8l3 3" /></S>,
+  actualizar: p => <S {...p}><path d="M20 12a8 8 0 1 1-2.7-6" /><path d="M20 3v6h-6" /></S>,
 };
 
 export function Icono({ tipo, s = 24 }) {

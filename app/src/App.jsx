@@ -6,6 +6,17 @@ const NACIMIENTO = '2026-04-19';          // ajustar en Ajustes → perfil
 const PULSACION_LARGA = 420;              // ms
 const UMBRAL_TETA_MS = 3 * 60 * 60 * 1000; // aviso "alimente" tras 3 h sin teta
 
+// Última respuesta buena de action=inicial, para pintar de entrada con lo
+// último conocido (en vez de una pantalla vacía) mientras se espera la
+// respuesta real del Apps Script, que puede tardar unos segundos.
+const CACHE_DATOS_LS = 'ultimo_estado_emma';
+function leerCacheDatos() {
+  try { return JSON.parse(localStorage.getItem(CACHE_DATOS_LS) || 'null') || {}; } catch { return {}; }
+}
+function guardarCacheDatos(parcial) {
+  try { localStorage.setItem(CACHE_DATOS_LS, JSON.stringify({ ...leerCacheDatos(), ...parcial })); } catch { /* localStorage lleno o bloqueado, no pasa nada */ }
+}
+
 const RAPIDOS = [
   { tipo: 'pañal' }, { tipo: 'baño' }, { tipo: 'vacuna' }, { tipo: 'peso' },
 ];
@@ -140,8 +151,9 @@ function resumen(r) {
 export default function App() {
   const [vista, setVista] = useState('registrar');
   const [menuAbierto, setMenuAbierto] = useState(false);
-  const [registros, setRegistros] = useState([]);
-  const [estado, setEstado] = useState(null);        // {tipo_evento, inicio} del servidor
+  const [registros, setRegistros] = useState(() => leerCacheDatos().registros || []);
+  const [estado, setEstado] = useState(() => leerCacheDatos().estado || null); // {tipo_evento, inicio} del servidor
+  const [sincronizando, setSincronizando] = useState(false);
   const [ahora, setAhora] = useState(Date.now());
   const [pendientes, setPendientes] = useState(leerCola().length);
   const [hoja, setHoja] = useState(null);            // {tipo, modo:'nuevo'|'editar', fila, valores}
@@ -154,7 +166,7 @@ export default function App() {
   const [estudiosError, setEstudiosError] = useState(false);
   const [categoriasEstudio, setCategoriasEstudio] = useState(null);
   const [carpetaEstudios, setCarpetaEstudios] = useState('');
-  const [perfil, setPerfil] = useState({ nombre: 'Emma', nacimiento: NACIMIENTO });
+  const [perfil, setPerfil] = useState(() => leerCacheDatos().perfil || { nombre: 'Emma', nacimiento: NACIMIENTO });
   const [avisoTeta, setAvisoTeta] = useState(false);
   const [editarInicio, setEditarInicio] = useState(false);
   const [notifPermiso, setNotifPermiso] = useState(
@@ -223,10 +235,15 @@ export default function App() {
   }, [registros]);
 
   const refrescar = useCallback(() => {
+    setSincronizando(true);
     consultar('inicial').then(res => {
+      setSincronizando(false);
       if (!res.ok) return;
-      setRegistros(res.registros || []);
-      setEstado(res.estado && res.estado.activo ? res.estado : null);
+      const registrosNuevos = res.registros || [];
+      const estadoNuevo = res.estado && res.estado.activo ? res.estado : null;
+      setRegistros(registrosNuevos);
+      setEstado(estadoNuevo);
+      guardarCacheDatos({ registros: registrosNuevos, estado: estadoNuevo });
       if (res.perfil && !perfilCargado.current) {
         setPerfil(res.perfil);
         perfilCargado.current = true;
@@ -264,6 +281,20 @@ export default function App() {
     if (vista === 'semana' && !semanaCache[semanaOffset]) cargarSemana(semanaOffset);
   }, [vista, semanaOffset, semanaCache, cargarSemana]);
 
+  // Precarga en segundo plano las semanas vecinas (sobre todo la anterior,
+  // que es el sentido más común de navegación) para que moverse con las
+  // flechas se sienta instantáneo la mayoría de las veces.
+  useEffect(() => {
+    if (vista !== 'semana') return;
+    if (!semanaCache[semanaOffset + 1]) cargarSemana(semanaOffset + 1);
+    if (semanaOffset > 0 && !semanaCache[semanaOffset - 1]) cargarSemana(semanaOffset - 1);
+  }, [vista, semanaOffset, semanaCache, cargarSemana]);
+
+  // Guarda el perfil en la cache local cada vez que cambia (venga del
+  // servidor o de una edición en Ajustes), para que la próxima apertura
+  // pinte de una con el nombre/fecha correctos sin esperar la red.
+  useEffect(() => { guardarCacheDatos({ perfil }); }, [perfil]);
+
   const cargarEstudios = useCallback(() => {
     setEstudiosError(false);
     consultar('estudios').then(r => {
@@ -277,6 +308,19 @@ export default function App() {
   useEffect(() => {
     if (vista === 'estudios' && !estudios) cargarEstudios();
   }, [vista, estudios, cargarEstudios]);
+
+  // Botón manual de "actualizar": no hay pull-to-refresh porque el body ya
+  // desactiva overscroll (para no disparar refrescos sin querer al scrollear),
+  // así que esto refresca los datos de la pantalla actual y de paso se fija
+  // si hay una versión nueva de la app para no depender de cerrar y reabrir.
+  function actualizarTodo() {
+    refrescar();
+    if (vista === 'semana') cargarSemana(semanaOffset);
+    if (vista === 'estudios') cargarEstudios();
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {});
+    }
+  }
 
   // Aviso "Alimente al ácaro" 3 h después de la última toma.
   useEffect(() => {
@@ -467,9 +511,18 @@ export default function App() {
       <header className="cab">
         <div>
           <h1>{perfil.nombre}</h1>
-          <div className="edad">{edad(perfil.nacimiento)}</div>
+          <div className="edad">
+            {edad(perfil.nacimiento)}
+            {sincronizando && <span style={{ marginLeft: 8, color: 'var(--n-500)' }}>· actualizando…</span>}
+          </div>
         </div>
-        <Marca s={30} color="var(--accent-600)" />
+        <div className="marcas">
+          <button className={'btn-actualizar' + (sincronizando ? ' girando' : '')} onClick={actualizarTodo}
+                  aria-label="Actualizar">
+            <Icono tipo="actualizar" s={20} />
+          </button>
+          <Marca s={30} color="var(--accent-600)" />
+        </div>
       </header>
       {pendientes > 0 && (
         <div className="cola">{pendientes} {pendientes === 1 ? 'registro pendiente' : 'registros pendientes'} de enviar</div>
@@ -583,8 +636,7 @@ export default function App() {
                   {esCronometrado ? (
                     <span className="h">
                       <span>Hace {hace(finDe(r))}</span>
-                      {reloj(fecha(r))}
-                      <span>→ {reloj(finDe(r))}</span>
+                      {reloj(fecha(r)) + ' - ' + reloj(finDe(r))}
                     </span>
                   ) : (
                     <span className="h">{hace(fecha(r))}<span>{reloj(fecha(r))}</span></span>

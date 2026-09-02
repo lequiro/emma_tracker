@@ -300,7 +300,10 @@ function doGet(e) {
 
   if (action === 'semana') {
     var offset = Math.max(0, Number(e.parameter.offset) || 0); // semanas hacia atrás; 0 = semana actual
-    var regs = leerRegistros_(3000);
+    // La semana actual (el caso de lejos más común) lee lo mismo que antes
+    // (600 filas) para no perder velocidad; solo se lee más de la hoja
+    // cuando se navega hacia semanas más viejas.
+    var regs = leerRegistros_(Math.min(6000, 600 + offset * 700));
     var dias = [], nombres = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
     for (var i = 6; i >= 0; i--) {
       var d = new Date(); d.setDate(d.getDate() - i - offset * 7); d.setHours(0, 0, 0, 0);
