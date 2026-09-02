@@ -281,6 +281,15 @@ export default function App() {
     if (vista === 'semana' && !semanaCache[semanaOffset]) cargarSemana(semanaOffset);
   }, [vista, semanaOffset, semanaCache, cargarSemana]);
 
+  // Precarga en segundo plano las semanas vecinas (sobre todo la anterior,
+  // que es el sentido más común de navegación) para que moverse con las
+  // flechas se sienta instantáneo la mayoría de las veces.
+  useEffect(() => {
+    if (vista !== 'semana') return;
+    if (!semanaCache[semanaOffset + 1]) cargarSemana(semanaOffset + 1);
+    if (semanaOffset > 0 && !semanaCache[semanaOffset - 1]) cargarSemana(semanaOffset - 1);
+  }, [vista, semanaOffset, semanaCache, cargarSemana]);
+
   // Guarda el perfil en la cache local cada vez que cambia (venga del
   // servidor o de una edición en Ajustes), para que la próxima apertura
   // pinte de una con el nombre/fecha correctos sin esperar la red.
@@ -299,6 +308,19 @@ export default function App() {
   useEffect(() => {
     if (vista === 'estudios' && !estudios) cargarEstudios();
   }, [vista, estudios, cargarEstudios]);
+
+  // Botón manual de "actualizar": no hay pull-to-refresh porque el body ya
+  // desactiva overscroll (para no disparar refrescos sin querer al scrollear),
+  // así que esto refresca los datos de la pantalla actual y de paso se fija
+  // si hay una versión nueva de la app para no depender de cerrar y reabrir.
+  function actualizarTodo() {
+    refrescar();
+    if (vista === 'semana') cargarSemana(semanaOffset);
+    if (vista === 'estudios') cargarEstudios();
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {});
+    }
+  }
 
   // Aviso "Alimente al ácaro" 3 h después de la última toma.
   useEffect(() => {
@@ -494,7 +516,13 @@ export default function App() {
             {sincronizando && <span style={{ marginLeft: 8, color: 'var(--n-500)' }}>· actualizando…</span>}
           </div>
         </div>
-        <Marca s={30} color="var(--accent-600)" />
+        <div className="marcas">
+          <button className={'btn-actualizar' + (sincronizando ? ' girando' : '')} onClick={actualizarTodo}
+                  aria-label="Actualizar">
+            <Icono tipo="actualizar" s={20} />
+          </button>
+          <Marca s={30} color="var(--accent-600)" />
+        </div>
       </header>
       {pendientes > 0 && (
         <div className="cola">{pendientes} {pendientes === 1 ? 'registro pendiente' : 'registros pendientes'} de enviar</div>

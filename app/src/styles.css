@@ -26,6 +26,10 @@ button{cursor:pointer}
 .cab{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:calc(14px + env(safe-area-inset-top)) 20px 12px}
 .cab h1{font-size:30px;font-weight:800;letter-spacing:-.02em;margin:0;line-height:1}
 .cab .edad{font-size:11.5px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--n-600);margin-top:5px}
+.cab .marcas{display:flex;align-items:center;gap:10px}
+.btn-actualizar{border:0;background:none;color:var(--n-700);padding:4px;display:flex;align-items:center}
+.btn-actualizar.girando{animation:girar .9s linear infinite}
+@keyframes girar{to{transform:rotate(360deg)}}
 .cola{background:var(--text);color:var(--bg);font-size:11px;font-weight:600;letter-spacing:.04em;padding:8px 20px}
 .cola.alerta{background:var(--text);color:var(--bg);width:100%;border:0;text-align:left;font-family:inherit}
 .cola.alerta:disabled{opacity:.85}
