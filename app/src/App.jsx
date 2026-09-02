@@ -53,7 +53,22 @@ function hace(desde) {
   const min = Math.floor((Date.now() - desde.getTime()) / 60000);
   if (min < 1) return 'ahora';
   if (min < 60) return min + ' min';
-  return Math.floor(min / 60) + ' h ' + dosD(min % 60);
+  const horas = Math.floor(min / 60);
+  if (horas < 24) return horas + ' h ' + dosD(min % 60);
+  const dias = Math.floor(horas / 24), restoHoras = horas % 24;
+  return dias + ' d' + (restoHoras ? ' ' + restoHoras + ' h' : '');
+}
+
+// Cuenta regresiva hasta una fecha futura (p. ej. próxima dosis de medicación).
+// Mismo criterio que hace(): pasadas las 24 h, se expresa en días.
+function faltan(hasta) {
+  const min = Math.max(0, Math.ceil((hasta.getTime() - Date.now()) / 60000));
+  if (min < 1) return 'ahora';
+  if (min < 60) return min + ' min';
+  const horas = Math.floor(min / 60);
+  if (horas < 24) return horas + ' h ' + dosD(min % 60);
+  const dias = Math.floor(horas / 24), restoHoras = horas % 24;
+  return dias + ' d' + (restoHoras ? ' ' + restoHoras + ' h' : '');
 }
 
 // "2026-04-19" con `new Date(...)` se interpreta como medianoche UTC, así
@@ -87,10 +102,10 @@ function edad(iso) {
 
 const fecha = r => new Date(r.iso || r.timestamp);
 
-// Para teta/sueño el timestamp guardado es la hora de FIN (se escribe recién
-// al parar el cronómetro); la hora de inicio se reconstruye restando la
-// duración guardada.
-const inicioDe = r => new Date(fecha(r).getTime() - (Number(r.duracion_minutos) || 0) * 60000);
+// Para teta/sueño el timestamp guardado es la hora de INICIO (se guarda al
+// arrancar el cronómetro, o a mano si se carga el registro manualmente); la
+// hora de fin se calcula sumando la duración guardada.
+const finDe = r => new Date(fecha(r).getTime() + (Number(r.duracion_minutos) || 0) * 60000);
 
 const SECCIONES = [
   { id: 'registrar', txt: 'Registrar', icono: 'registrar' },
@@ -131,7 +146,9 @@ export default function App() {
   const [pendientes, setPendientes] = useState(leerCola().length);
   const [hoja, setHoja] = useState(null);            // {tipo, modo:'nuevo'|'editar', fila, valores}
   const [aviso, setAviso] = useState(null);
-  const [semana, setSemana] = useState(null);
+  const [semanaOffset, setSemanaOffset] = useState(0); // 0 = semana actual, 1 = anterior, ...
+  const [semanaCache, setSemanaCache] = useState({});  // offset -> respuesta del servidor
+  const semana = semanaCache[semanaOffset] || null;
   const [semanaError, setSemanaError] = useState(false);
   const [estudios, setEstudios] = useState(null);
   const [estudiosError, setEstudiosError] = useState(false);
@@ -202,7 +219,7 @@ export default function App() {
 
   const ultimaTeta = useMemo(() => {
     const r = registros.find(x => x.tipo_evento === 'teta');
-    return r ? fecha(r) : null;
+    return r ? finDe(r) : null;
   }, [registros]);
 
   const refrescar = useCallback(() => {
@@ -236,16 +253,16 @@ export default function App() {
     };
   }, [refrescar]);
 
-  const cargarSemana = useCallback(() => {
+  const cargarSemana = useCallback(offset => {
     setSemanaError(false);
-    consultar('semana').then(r => {
-      if (r.ok) setSemana(r); else setSemanaError(true);
+    consultar('semana', '&offset=' + offset).then(r => {
+      if (r.ok) setSemanaCache(c => ({ ...c, [offset]: r })); else setSemanaError(true);
     });
   }, []);
 
   useEffect(() => {
-    if (vista === 'semana' && !semana) cargarSemana();
-  }, [vista, semana, cargarSemana]);
+    if (vista === 'semana' && !semanaCache[semanaOffset]) cargarSemana(semanaOffset);
+  }, [vista, semanaOffset, semanaCache, cargarSemana]);
 
   const cargarEstudios = useCallback(() => {
     setEstudiosError(false);
@@ -297,6 +314,7 @@ export default function App() {
     const optimista = {
       fila: 'tmp-' + Date.now(), tipo_evento: tipo,
       iso: new Date().toISOString(), duracion_minutos: '', notas: '', ...extra,
+      ...(extra.timestamp ? { iso: extra.timestamp } : {}),
     };
     setRegistros(r => [optimista, ...r]);
     llamar({ tipo_evento: tipo, ...extra }).then(res => {
@@ -373,6 +391,30 @@ export default function App() {
     if (toque.current) toque.current.cancelado = true;
   };
 
+  // Mismo mecanismo para las tarjetas de Teta/Sueño: un toque simple arranca
+  // o para el cronómetro (como antes); mantener pulsado abre la carga manual
+  // de un registro con hora de inicio y duración, pero solo si no hay ya un
+  // cronómetro en marcha (si lo hay, el toque simple sigue sirviendo para
+  // pararlo, no tiene sentido abrir el alta manual encima).
+  const alPulsarCrono = tipo => e => {
+    sostenido.current = false;
+    toque.current = { x: e.clientX, y: e.clientY, cancelado: false };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no soportado */ }
+    clearTimeout(pulsacion.current);
+    pulsacion.current = setTimeout(() => {
+      if (estado) return;
+      sostenido.current = true;
+      if (navigator.vibrate) navigator.vibrate(12);
+      setHoja({ tipo, modo: 'nuevo', valores: {} });
+    }, PULSACION_LARGA);
+  };
+  const alSoltarCrono = tipo => () => {
+    clearTimeout(pulsacion.current);
+    const cancelado = !toque.current || toque.current.cancelado;
+    toque.current = null;
+    if (!sostenido.current && !cancelado) cronometro(tipo);
+  };
+
   // Mismo mecanismo de mantener presionado, para abrir el detalle de un
   // registro reciente. Un toque simple no hace nada: hay que sostener.
   const pulsacionLista = useRef(null);
@@ -406,9 +448,10 @@ export default function App() {
   const enMarcha = estado ? Math.floor((ahora - new Date(estado.inicio)) / 1000) : 0;
   const cronoTexto = dosD(Math.floor(enMarcha / 3600)) + ':' + dosD(Math.floor(enMarcha / 60) % 60) + ':' + dosD(enMarcha % 60);
 
-  const ultimo = tipo => {
+  // fin=true usa la hora de fin (teta/sueño); si no, la hora del registro tal cual.
+  const ultimo = (tipo, fin) => {
     const r = registros.find(x => x.tipo_evento === tipo);
-    return r ? 'Hace ' + hace(fecha(r)) : 'Sin registros';
+    return r ? 'Hace ' + hace(fin ? finDe(r) : fecha(r)) : 'Sin registros';
   };
 
   // Los "estudios" tienen su propia pestaña; no se mezclan con el feed diario.
@@ -436,12 +479,14 @@ export default function App() {
           Alimente al ácaro · última toma hace {hace(ultimaTeta)}
         </button>
       )}
-      {avisosMed.map(medId => {
-        const med = medicamentos.find(m => m.id === medId);
-        if (!med) return null;
+      {medicamentos.filter(medicamentoVigente).map(med => {
+        const prox = proximaDosisMed(med);
+        const vencido = ahora >= prox.getTime();
         return (
-          <button key={medId} className="cola alerta" onClick={() => registrarToma(medId)}>
-            Hora de {med.nombre} · toca ahora
+          <button key={med.id} className="cola alerta" disabled={!vencido}
+                  onClick={() => vencido && registrarToma(med.id)}>
+            {vencido ? 'Hora de ' + med.nombre + ' · toca ahora'
+                     : med.nombre + ' · próxima toma en ' + faltan(prox)}
           </button>
         );
       })}
@@ -465,15 +510,20 @@ export default function App() {
           )}
 
           <div className="pad" style={{ paddingTop: 16 }}>
-            <div className="rotulo" style={{ marginBottom: 10 }}>Cronómetro</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+              <div className="rotulo">Cronómetro</div>
+              <div style={{ fontSize: 10, color: 'var(--n-500)' }}>Mantén pulsado para cargar a mano</div>
+            </div>
             <div className="rejilla dos">
               {['teta', 'sueño'].map(t => (
                 <button key={t} className="celda" disabled={!!estado && estado.tipo_evento !== t}
-                        onClick={() => cronometro(t)}>
+                        onPointerDown={alPulsarCrono(t)} onPointerUp={alSoltarCrono(t)}
+                        onPointerMove={alMover} onPointerLeave={cancelar}
+                        onPointerCancel={cancelar} onContextMenu={e => e.preventDefault()}>
                   <Icono tipo={t} s={30} />
                   <div>
                     <div className="t" style={{ textTransform: 'capitalize' }}>{t}</div>
-                    <div className="s">{ultimo(t)}</div>
+                    <div className="s">{ultimo(t, true)}</div>
                   </div>
                 </button>
               ))}
@@ -486,15 +536,25 @@ export default function App() {
               <div style={{ fontSize: 10, color: 'var(--n-500)' }}>Mantén pulsado para detalle</div>
             </div>
             <div className="rejilla dos">
-              {RAPIDOS.map(({ tipo, etiqueta }) => (
-                <button key={tipo} className="celda"
-                        onPointerDown={alPulsar(tipo)} onPointerUp={alSoltar(tipo)}
-                        onPointerMove={alMover} onPointerLeave={cancelar}
-                        onPointerCancel={cancelar} onContextMenu={e => e.preventDefault()}>
-                  <Icono tipo={tipo} s={24} />
-                  <div className="t" style={{ textTransform: 'capitalize' }}>{etiqueta || tipo}</div>
-                </button>
-              ))}
+              {RAPIDOS.map(({ tipo, etiqueta }) => {
+                const conHace = tipo === 'pañal' || tipo === 'baño';
+                return (
+                  <button key={tipo} className="celda"
+                          onPointerDown={alPulsar(tipo)} onPointerUp={alSoltar(tipo)}
+                          onPointerMove={alMover} onPointerLeave={cancelar}
+                          onPointerCancel={cancelar} onContextMenu={e => e.preventDefault()}>
+                    <Icono tipo={tipo} s={24} />
+                    {conHace ? (
+                      <div>
+                        <div className="t" style={{ textTransform: 'capitalize' }}>{etiqueta || tipo}</div>
+                        <div className="s">{ultimo(tipo)}</div>
+                      </div>
+                    ) : (
+                      <div className="t" style={{ textTransform: 'capitalize' }}>{etiqueta || tipo}</div>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -521,7 +581,11 @@ export default function App() {
                     {resumen(r) && <span className="s"> · {resumen(r)}</span>}
                   </span>
                   {esCronometrado ? (
-                    <span className="h">{reloj(inicioDe(r))}<span>→ {reloj(fecha(r))}</span></span>
+                    <span className="h">
+                      <span>Hace {hace(finDe(r))}</span>
+                      {reloj(fecha(r))}
+                      <span>→ {reloj(finDe(r))}</span>
+                    </span>
                   ) : (
                     <span className="h">{hace(fecha(r))}<span>{reloj(fecha(r))}</span></span>
                   )}
@@ -564,6 +628,20 @@ export default function App() {
 
       {vista === 'semana' && (
         <section className="pantalla pad" style={{ paddingTop: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+            <button onClick={() => setSemanaOffset(o => o + 1)} aria-label="Semana anterior"
+                    style={{ border: 0, background: 'none', color: 'var(--text)', fontSize: 20, fontWeight: 800, padding: '4px 10px' }}>
+              ‹
+            </button>
+            <div style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--n-600)' }}>
+              {semanaOffset === 0 ? 'Esta semana' : semana ? semana.dias[0].fecha + ' – ' + semana.dias[6].fecha : 'Cargando…'}
+            </div>
+            <button onClick={() => setSemanaOffset(o => Math.max(0, o - 1))} disabled={semanaOffset === 0}
+                    aria-label="Semana siguiente"
+                    style={{ border: 0, background: 'none', color: semanaOffset === 0 ? 'var(--n-400)' : 'var(--text)', fontSize: 20, fontWeight: 800, padding: '4px 10px' }}>
+              ›
+            </button>
+          </div>
           <div className="rotulo" style={{ marginBottom: 10 }}>Tomas por día</div>
           <hr className="regla" style={{ marginBottom: 12 }} />
           <div className="barras">
@@ -621,7 +699,7 @@ export default function App() {
           {semanaError && (
             <div style={{ marginTop: 16 }}>
               <p style={{ color: 'var(--n-600)', fontSize: 13, marginBottom: 10 }}>No se pudo cargar. Revisá tu conexión.</p>
-              <button className="btn btn-secundario" onClick={cargarSemana}>Reintentar</button>
+              <button className="btn btn-secundario" onClick={() => cargarSemana(semanaOffset)}>Reintentar</button>
             </div>
           )}
         </section>
@@ -1781,6 +1859,8 @@ function EditarInicioSheet({ valorInicial, onCerrar, onGuardar }) {
 
 function HojaDetalle({ hoja, esquema, registros, perfil, onCerrar, onGuardar, onBorrar, onReanudar }) {
   const campos = DETALLE[hoja.tipo] || [];
+  const esCrono = hoja.tipo === 'teta' || hoja.tipo === 'sueño';
+  const conHora = hoja.modo === 'editar' || esCrono;
   const [valores, setValores] = useState(() => {
     const v = {};
     campos.forEach(c => { if (hoja.valores[c.campo]) v[c.campo] = hoja.valores[c.campo]; });
@@ -1817,9 +1897,9 @@ function HojaDetalle({ hoja, esquema, registros, perfil, onCerrar, onGuardar, on
         </div>
         <hr className="regla" style={{ margin: '16px 0 0' }} />
 
-        {hoja.modo === 'editar' && (
+        {conHora && (
           <div className="campo">
-            <span className="rotulo">Hora</span>
+            <span className="rotulo">{esCrono ? 'Empezó a las' : 'Hora'}</span>
             <input className="entrada-texto" type="datetime-local"
                    value={hora} onChange={e => setHora(e.target.value)} />
           </div>
@@ -1875,7 +1955,7 @@ function HojaDetalle({ hoja, esquema, registros, perfil, onCerrar, onGuardar, on
             {hoja.modo === 'editar' ? 'Borrar' : 'Cancelar'}
           </button>
           <button className="guardar" disabled={hoja.tipo === 'vacuna' && !valores.dosis}
-                  onClick={() => onGuardar(hoja.modo === 'editar' ? { ...valores, timestamp: deLocalISO(hora) } : valores)}>
+                  onClick={() => onGuardar(conHora ? { ...valores, timestamp: deLocalISO(hora) } : valores)}>
             Guardar
           </button>
         </div>
