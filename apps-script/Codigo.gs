@@ -46,6 +46,14 @@ function hoja_() {
 
 function indice_(cols, nombre) { return cols.indexOf(nombre) + 1; }
 
+// Evita que una duración quede negativa o inválida (carga a mano con un
+// número raro, o un valor no numérico). Nunca rechaza: si el valor no sirve,
+// lo deja en 0 en vez de romper el cálculo de hora de fin (inicio + duración).
+function sanearDuracion_(valor) {
+  var n = Number(valor);
+  return (!isFinite(n) || n < 0) ? 0 : n;
+}
+
 function json_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
@@ -118,7 +126,10 @@ function escribir_(datos) {
   // Si viene un timestamp explícito (p. ej. hora de inicio de teta/sueño, o
   // un alta manual) se respeta; si no, se usa el momento actual del servidor.
   fila[indice_(cols, 'timestamp') - 1] = datos.timestamp ? new Date(datos.timestamp) : new Date();
-  cols.forEach(function (c, j) { if (datos[c] !== undefined && c !== 'timestamp') fila[j] = datos[c]; });
+  cols.forEach(function (c, j) {
+    if (datos[c] === undefined || c === 'timestamp') return;
+    fila[j] = c === 'duracion_minutos' ? sanearDuracion_(datos[c]) : datos[c];
+  });
   sh.appendRow(fila);
   return sh.getLastRow();
 }
@@ -137,7 +148,13 @@ function doPost(e) {
     if (b.accion === 'ajustar_inicio') {
       var estAct = estado_();
       if (!estAct.activo) return json_({ ok: false, mensaje: 'No hay nada en marcha' });
-      if (b.inicio) estAct.inicio = b.inicio;
+      if (b.inicio) {
+        // Nunca en el futuro: si se cargó una hora posterior a "ahora" (por
+        // error de tipeo), se recorta a este momento en vez de dejar el
+        // cronómetro con un inicio imposible (tiempo transcurrido negativo).
+        var nuevoInicio = new Date(b.inicio), ahoraSrv = new Date();
+        estAct.inicio = (nuevoInicio > ahoraSrv ? ahoraSrv : nuevoInicio).toISOString();
+      }
       guardarEstado_(estAct);
       return json_({ ok: true, mensaje: 'Hora de inicio actualizada', estado: estAct });
     }
@@ -183,7 +200,9 @@ function doPost(e) {
       var h = hoja_(), sh = h.sh, cols = h.cols;
       COLUMNAS.forEach(function (c) {
         if (b[c] === undefined) return;
-        var valor = (c === 'timestamp') ? new Date(b[c]) : b[c];
+        var valor = (c === 'timestamp') ? new Date(b[c])
+          : (c === 'duracion_minutos') ? sanearDuracion_(b[c])
+          : b[c];
         sh.getRange(b.fila, indice_(cols, c)).setValue(valor);
       });
       return json_({ ok: true, mensaje: 'Registro actualizado' });
@@ -281,6 +300,32 @@ function migrarInicioTetaSueno() {
   Logger.log('Migración lista: ' + cambiadas + ' filas de teta/sueño actualizadas.');
 }
 
+// EJECUTAR A MANO cuando quieras (▶ en el editor, con esta función elegida
+// en el desplegable) para revisar si quedó alguna fila de teta/sueño que
+// migrarInicioTetaSueno() no haya podido corregir (timestamp que no es una
+// fecha real) o con duración negativa. Solo lee y escribe en el Log — no
+// modifica nada de la planilla.
+function auditarInicioTetaSueno() {
+  var h = hoja_(), sh = h.sh, cols = h.cols;
+  var colTs = indice_(cols, 'timestamp');
+  var colTipo = indice_(cols, 'tipo_evento');
+  var colDur = indice_(cols, 'duracion_minutos');
+  var ultima = sh.getLastRow();
+  var sospechosas = [];
+  if (ultima >= 2) {
+    var filas = sh.getRange(2, 1, ultima - 1, cols.length).getValues();
+    for (var i = 0; i < filas.length; i++) {
+      var tipo = filas[i][colTipo - 1];
+      if (tipo !== 'teta' && tipo !== 'sueño') continue;
+      var fila = 2 + i, ts = filas[i][colTs - 1], dur = filas[i][colDur - 1];
+      if (!(ts instanceof Date)) sospechosas.push('Fila ' + fila + ': timestamp no es una fecha (' + ts + ')');
+      if (Number(dur) < 0) sospechosas.push('Fila ' + fila + ': duración negativa (' + dur + ')');
+    }
+  }
+  if (!sospechosas.length) Logger.log('Todo en orden: ninguna fila de teta/sueño sospechosa.');
+  else Logger.log(sospechosas.length + ' fila(s) para revisar:\n' + sospechosas.join('\n'));
+}
+
 function doGet(e) {
   var action = (e.parameter.action || 'inicial');
 
@@ -303,7 +348,16 @@ function doGet(e) {
     // La semana actual (el caso de lejos más común) lee lo mismo que antes
     // (600 filas) para no perder velocidad; solo se lee más de la hoja
     // cuando se navega hacia semanas más viejas.
-    var regs = leerRegistros_(Math.min(6000, 600 + offset * 700));
+    var limiteLeido = Math.min(6000, 600 + offset * 700);
+    var regs = leerRegistros_(limiteLeido);
+    var inicioSemana = new Date(); inicioSemana.setDate(inicioSemana.getDate() - 6 - offset * 7); inicioSemana.setHours(0, 0, 0, 0);
+    // Si se leyó justo el máximo (la planilla tiene más filas de las que se
+    // pidieron) y la fila más vieja que llegó es más nueva que el primer día
+    // de esta semana, puede haber registros de esa semana que quedaron fuera
+    // de la ventana leída. No pasa con el volumen actual, pero avisa en vez
+    // de mostrar números incompletos en silencio.
+    var masVieja = regs.length ? new Date(regs[regs.length - 1].iso) : null;
+    var incompleto = regs.length >= limiteLeido && masVieja && masVieja > inicioSemana;
     var dias = [], nombres = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
     for (var i = 6; i >= 0; i--) {
       var d = new Date(); d.setDate(d.getDate() - i - offset * 7); d.setHours(0, 0, 0, 0);
@@ -329,7 +383,7 @@ function doGet(e) {
       fecha: Utilities.formatDate(new Date(tallas[0].iso), Session.getScriptTimeZone(), 'dd/MM/yyyy')
     } : null;
     return json_({
-      ok: true, offset: offset, dias: dias, peso: peso, talla: talla,
+      ok: true, offset: offset, dias: dias, peso: peso, talla: talla, incompleto: incompleto,
       max_tomas: Math.max.apply(null, dias.map(function (d) { return d.tomas; }).concat([1]))
     });
   }
