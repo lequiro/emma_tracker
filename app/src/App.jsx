@@ -226,7 +226,12 @@ export default function App() {
       }
     });
     // si un medicamento dejó de estar vigente (venció el tratamiento), sacar su aviso
-    setAvisosMed(a => a.filter(id => vigentes.some(m => m.id === id)));
+    // (se devuelve la misma referencia cuando no cambia nada, así React no
+    // re-renderiza de más en cada tick del segundero por esto)
+    setAvisosMed(a => {
+      const filtrado = a.filter(id => vigentes.some(m => m.id === id));
+      return filtrado.length === a.length ? a : filtrado;
+    });
   }, [ahora, medicamentos, tomasMed, notifPermiso]);
 
   const ultimaTeta = useMemo(() => {
@@ -633,14 +638,10 @@ export default function App() {
                     <span className="t">{r.tipo_evento}</span>
                     {resumen(r) && <span className="s"> · {resumen(r)}</span>}
                   </span>
-                  {esCronometrado ? (
-                    <span className="h">
-                      <span>Hace {hace(finDe(r))}</span>
-                      {reloj(fecha(r)) + ' - ' + reloj(finDe(r))}
-                    </span>
-                  ) : (
-                    <span className="h">{hace(fecha(r))}<span>{reloj(fecha(r))}</span></span>
-                  )}
+                  <span className="h">
+                    <span>Hace {hace(esCronometrado ? finDe(r) : fecha(r))}</span>
+                    {esCronometrado ? reloj(fecha(r)) + ' - ' + reloj(finDe(r)) : reloj(fecha(r))}
+                  </span>
                 </button>
               );
             })}
@@ -694,6 +695,11 @@ export default function App() {
               ›
             </button>
           </div>
+          {semana?.incompleto && (
+            <p style={{ color: 'var(--n-600)', fontSize: 11, marginBottom: 12 }}>
+              Esta semana tiene muchos registros acumulados; los números podrían estar incompletos.
+            </p>
+          )}
           <div className="rotulo" style={{ marginBottom: 10 }}>Tomas por día</div>
           <hr className="regla" style={{ marginBottom: 12 }} />
           <div className="barras">
@@ -1882,6 +1888,7 @@ function HojaEsquema({ esquema, onGuardar, onCerrar }) {
 
 function EditarInicioSheet({ valorInicial, onCerrar, onGuardar }) {
   const [valor, setValor] = useState(valorInicial);
+  const ahoraLocal = aLocal(new Date());
   return (
     <>
       <div className="fondo" onClick={onCerrar} />
@@ -1898,11 +1905,11 @@ function EditarInicioSheet({ valorInicial, onCerrar, onGuardar }) {
         <hr className="regla" style={{ margin: '16px 0 0' }} />
         <div className="campo" style={{ borderBottom: 0 }}>
           <span className="rotulo">Empezó a las</span>
-          <input className="entrada-texto" type="datetime-local" value={valor} onChange={e => setValor(e.target.value)} />
+          <input className="entrada-texto" type="datetime-local" max={ahoraLocal} value={valor} onChange={e => setValor(e.target.value)} />
         </div>
         <div className="acciones">
           <button onClick={onCerrar}>Cancelar</button>
-          <button className="guardar" onClick={() => onGuardar(valor)}>Guardar</button>
+          <button className="guardar" onClick={() => onGuardar(valor > ahoraLocal ? ahoraLocal : valor)}>Guardar</button>
         </div>
       </div>
     </>
@@ -1915,11 +1922,21 @@ function HojaDetalle({ hoja, esquema, registros, perfil, onCerrar, onGuardar, on
   const conHora = hoja.modo === 'editar' || esCrono;
   const [valores, setValores] = useState(() => {
     const v = {};
-    campos.forEach(c => { if (hoja.valores[c.campo]) v[c.campo] = hoja.valores[c.campo]; });
+    // !== '' (no truthy): una duración de 0 es un valor real, no "vacío".
+    campos.forEach(c => { if (hoja.valores[c.campo] !== undefined && hoja.valores[c.campo] !== '') v[c.campo] = hoja.valores[c.campo]; });
     if (hoja.valores.notas) v.notas = hoja.valores.notas;
     return v;
   });
   const [hora, setHora] = useState(() => aLocal(hoja.modo === 'editar' ? fecha(hoja.valores) : new Date()));
+  const ahoraLocal = aLocal(new Date());
+  // Nunca en el futuro (rompería el cálculo de "hace"/hora de fin): si se
+  // llega a cargar una hora posterior a ahora, se recorta a este momento.
+  const limpiarHora = valor => (valor > ahoraLocal ? ahoraLocal : valor);
+  const limpiarDuracion = v => {
+    if (v.duracion_minutos === undefined || v.duracion_minutos === '') return v;
+    const n = Number(v.duracion_minutos);
+    return { ...v, duracion_minutos: (!Number.isFinite(n) || n < 0) ? 0 : n };
+  };
   const [otraVacuna, setOtraVacuna] = useState(false);
   const set = (campo, valor) => setValores(v => ({ ...v, [campo]: v[campo] === valor ? '' : valor }));
 
@@ -1952,7 +1969,7 @@ function HojaDetalle({ hoja, esquema, registros, perfil, onCerrar, onGuardar, on
         {conHora && (
           <div className="campo">
             <span className="rotulo">{esCrono ? 'Empezó a las' : 'Hora'}</span>
-            <input className="entrada-texto" type="datetime-local"
+            <input className="entrada-texto" type="datetime-local" max={ahoraLocal}
                    value={hora} onChange={e => setHora(e.target.value)} />
           </div>
         )}
@@ -2007,7 +2024,7 @@ function HojaDetalle({ hoja, esquema, registros, perfil, onCerrar, onGuardar, on
             {hoja.modo === 'editar' ? 'Borrar' : 'Cancelar'}
           </button>
           <button className="guardar" disabled={hoja.tipo === 'vacuna' && !valores.dosis}
-                  onClick={() => onGuardar(conHora ? { ...valores, timestamp: deLocalISO(hora) } : valores)}>
+                  onClick={() => onGuardar(limpiarDuracion(conHora ? { ...valores, timestamp: deLocalISO(limpiarHora(hora)) } : valores))}>
             Guardar
           </button>
         </div>
