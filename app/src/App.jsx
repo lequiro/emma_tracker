@@ -17,8 +17,11 @@ function guardarCacheDatos(parcial) {
   try { localStorage.setItem(CACHE_DATOS_LS, JSON.stringify({ ...leerCacheDatos(), ...parcial })); } catch { /* localStorage lleno o bloqueado, no pasa nada */ }
 }
 
+// "teta" conserva el cronómetro (arranca/para toma) además del registro
+// rápido; los otros tres son alta directa con hoja de detalle al mantener
+// pulsado. Los 4 muestran "hace cuánto" (o la fecha, ver ultimo()).
 const RAPIDOS = [
-  { tipo: 'pañal' }, { tipo: 'baño' }, { tipo: 'vacuna' }, { tipo: 'peso' },
+  { tipo: 'teta', crono: true }, { tipo: 'baño' }, { tipo: 'vacuna' }, { tipo: 'peso' },
 ];
 
 // Campos opcionales de la hoja de detalle, por tipo de evento.
@@ -54,11 +57,6 @@ const DETALLE = {
 
 const dosD = n => String(n).padStart(2, '0');
 const reloj = d => dosD(d.getHours()) + ':' + dosD(d.getMinutes());
-
-function horasMin(horas) {
-  const totalMin = Math.round((horas || 0) * 60);
-  return Math.floor(totalMin / 60) + ' h ' + dosD(totalMin % 60);
-}
 
 function hace(desde) {
   const min = Math.floor((Date.now() - desde.getTime()) / 60000);
@@ -118,14 +116,15 @@ const fecha = r => new Date(r.iso || r.timestamp);
 // hora de fin se calcula sumando la duración guardada.
 const finDe = r => new Date(fecha(r).getTime() + (Number(r.duracion_minutos) || 0) * 60000);
 
+// Ajustes ya no vive acá: es información que casi no cambia, así que se
+// accede con un ícono en el header en vez de competir por espacio en este
+// menú (ver botón "ajustes" en el <header>). Hoy se fusionó con Semana.
 const SECCIONES = [
   { id: 'registrar', txt: 'Registrar', icono: 'registrar' },
-  { id: 'hoy', txt: 'Hoy', icono: 'reloj' },
-  { id: 'semana', txt: 'Semana', icono: 'barras' },
+  { id: 'semana', txt: 'Resumen', icono: 'barras' },
   { id: 'citas', txt: 'Turnos', icono: 'cita' },
   { id: 'vacunas', txt: 'Medicación', icono: 'vacuna' },
   { id: 'estudios', txt: 'Estudios', icono: 'documento' },
-  { id: 'ajustes', txt: 'Ajustes', icono: 'ajustes' },
 ];
 
 // Turnos, medicación y tomas ahora también viven en la planilla (ver Codigo.gs),
@@ -173,6 +172,7 @@ export default function App() {
   const [perfil, setPerfil] = useState(() => leerCacheDatos().perfil || { nombre: 'Emma', nacimiento: NACIMIENTO });
   const [avisoTeta, setAvisoTeta] = useState(false);
   const [editarInicio, setEditarInicio] = useState(false);
+  const [ajustesAbierto, setAjustesAbierto] = useState(false);
   const [notifPermiso, setNotifPermiso] = useState(
     typeof Notification !== 'undefined' ? Notification.permission : 'no-disponible'
   );
@@ -188,6 +188,14 @@ export default function App() {
   const [esquema, setEsquemaState] = useState(() => leerCacheDatos().esquema || leerEsquema());
   const [medicamentos, setMedicamentosState] = useState(() => leerCacheDatos().medicamentos || leerMedicamentos());
   const [tomasMed, setTomasMedState] = useState(() => leerCacheDatos().tomasMed || leerTomasMed());
+  // Historial completo de baño/vacuna/peso (toda la planilla, no sólo los
+  // ~60 registros cortos de action=inicial): sólo para el "hace cuánto"/fecha
+  // de Registrar más allá de esa ventana y el gráfico de Peso y talla en
+  // Resumen. No son parte de la migración localStorage→planilla: siempre
+  // vivieron en la planilla, nunca tuvieron clave propia en el teléfono.
+  const [historialBano, setHistorialBano] = useState(() => leerCacheDatos().historialBano || []);
+  const [historialVacuna, setHistorialVacuna] = useState(() => leerCacheDatos().historialVacuna || []);
+  const [historialPeso, setHistorialPeso] = useState(() => leerCacheDatos().historialPeso || []);
   const [avisosMed, setAvisosMed] = useState([]); // ids de medicamentos con dosis vencida
   const pulsacion = useRef(null);
   const sostenido = useRef(false);
@@ -335,11 +343,23 @@ export default function App() {
     medsNuevos.forEach(m => { medsPorFila[m.fila] = m.id; });
     const tomasNuevas = (r.tomas_medicacion || []).map(row => filaAToma(row, medsPorFila));
     const esquemaNuevo = (r.esquema && r.esquema.length) ? r.esquema : ESQUEMA_DEFECTO;
+    // banos/vacunas/pesos ya vienen como filas crudas (mismo formato que
+    // "registros"): no hacen falta adaptadores, se consumen tal cual en
+    // ultimo() y en el gráfico de Peso y talla.
+    const banosNuevos = r.banos || [];
+    const vacunasNuevas = r.vacunas || [];
+    const pesosNuevos = r.pesos || [];
     setCitasState(citasNuevas);
     setMedicamentosState(medsNuevos);
     setTomasMedState(tomasNuevas);
     setEsquemaState(esquemaNuevo);
-    guardarCacheDatos({ citas: citasNuevas, medicamentos: medsNuevos, tomasMed: tomasNuevas, esquema: esquemaNuevo });
+    setHistorialBano(banosNuevos);
+    setHistorialVacuna(vacunasNuevas);
+    setHistorialPeso(pesosNuevos);
+    guardarCacheDatos({
+      citas: citasNuevas, medicamentos: medsNuevos, tomasMed: tomasNuevas, esquema: esquemaNuevo,
+      historialBano: banosNuevos, historialVacuna: vacunasNuevas, historialPeso: pesosNuevos,
+    });
   };
 
   // Turnos/medicación/esquema se piden aparte de action=inicial (no en cada
@@ -374,8 +394,8 @@ export default function App() {
   // una con lo último conocido en la próxima apertura — mismo criterio que
   // ya se usa para "perfil".
   useEffect(() => {
-    guardarCacheDatos({ citas, medicamentos, tomasMed, esquema });
-  }, [citas, medicamentos, tomasMed, esquema]);
+    guardarCacheDatos({ citas, medicamentos, tomasMed, esquema, historialBano, historialVacuna, historialPeso });
+  }, [citas, medicamentos, tomasMed, esquema, historialBano, historialVacuna, historialPeso]);
 
   const cargarSemana = useCallback(offset => {
     setSemanaError(false);
@@ -422,9 +442,9 @@ export default function App() {
   // si hay una versión nueva de la app para no depender de cerrar y reabrir.
   function actualizarTodo() {
     refrescar();
+    cargarExtra(); // también refresca citas/medicación/esquema y el historial de baño/vacuna/peso
     if (vista === 'semana') cargarSemana(semanaOffset);
     if (vista === 'estudios') cargarEstudios();
-    if (vista === 'citas' || vista === 'vacunas') cargarExtra();
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {});
     }
@@ -600,10 +620,19 @@ export default function App() {
   const enMarcha = estado ? Math.floor((ahora - new Date(estado.inicio)) / 1000) : 0;
   const cronoTexto = dosD(Math.floor(enMarcha / 3600)) + ':' + dosD(Math.floor(enMarcha / 60) % 60) + ':' + dosD(enMarcha % 60);
 
-  // fin=true usa la hora de fin (teta/sueño); si no, la hora del registro tal cual.
+  // fin=true usa la hora de fin (teta); si no, la hora del registro tal cual.
+  // Primero busca en "registros" (ventana corta de action=inicial, pero al
+  // instante e incluye lo recién cargado); si no aparece ahí cae al
+  // historial completo de action=extra. Pasados 3 días sin uno nuevo, en vez
+  // de seguir contando muestra la fecha real ("Últ. 12 jul" en vez de
+  // "Hace 12 d") — es lo que realmente se quiere saber a esa distancia.
+  const HISTORIAL_POR_TIPO = { 'baño': historialBano, vacuna: historialVacuna, peso: historialPeso };
   const ultimo = (tipo, fin) => {
-    const r = registros.find(x => x.tipo_evento === tipo);
-    return r ? 'Hace ' + hace(fin ? finDe(r) : fecha(r)) : 'Sin registros';
+    const r = registros.find(x => x.tipo_evento === tipo) || (HISTORIAL_POR_TIPO[tipo] || [])[0];
+    if (!r) return 'Sin registros';
+    const f = fin ? finDe(r) : fecha(r);
+    const dias = Math.floor((Date.now() - f.getTime()) / 86400000);
+    return dias >= 3 ? 'Últ. ' + f.toLocaleDateString('es', { day: 'numeric', month: 'short' }) : 'Hace ' + hace(f);
   };
 
   // Los "estudios", turnos, medicación y tomas tienen su propia pestaña; no
@@ -626,6 +655,9 @@ export default function App() {
           </div>
         </div>
         <div className="marcas">
+          <button className="btn-actualizar" onClick={() => setAjustesAbierto(true)} aria-label="Ajustes">
+            <Icono tipo="ajustes" s={20} />
+          </button>
           <button className={'btn-actualizar' + (sincronizando ? ' girando' : '')} onClick={actualizarTodo}
                   aria-label="Actualizar">
             <Icono tipo="actualizar" s={20} />
@@ -673,57 +705,31 @@ export default function App() {
 
           <div className="pad" style={{ paddingTop: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-              <div className="rotulo">Cronómetro</div>
-              <div style={{ fontSize: 10, color: 'var(--n-500)' }}>Mantén pulsado para cargar a mano</div>
+              <div className="rotulo">Registro rápido</div>
+              <div style={{ fontSize: 10, color: 'var(--n-500)' }}>Mantén pulsado para más detalle</div>
             </div>
             <div className="rejilla dos">
-              {['teta', 'sueño'].map(t => (
-                <button key={t} className="celda" disabled={!!estado && estado.tipo_evento !== t}
-                        onPointerDown={alPulsarCrono(t)} onPointerUp={alSoltarCrono(t)}
+              {RAPIDOS.map(({ tipo, etiqueta, crono }) => (
+                <button key={tipo} className="celda"
+                        disabled={crono && !!estado && estado.tipo_evento !== tipo}
+                        onPointerDown={(crono ? alPulsarCrono : alPulsar)(tipo)}
+                        onPointerUp={(crono ? alSoltarCrono : alSoltar)(tipo)}
                         onPointerMove={alMover} onPointerLeave={cancelar}
                         onPointerCancel={cancelar} onContextMenu={e => e.preventDefault()}>
-                  <Icono tipo={t} s={30} />
+                  <Icono tipo={tipo} s={24} />
                   <div>
-                    <div className="t" style={{ textTransform: 'capitalize' }}>{t}</div>
-                    <div className="s">{ultimo(t, true)}</div>
+                    <div className="t" style={{ textTransform: 'capitalize' }}>{etiqueta || tipo}</div>
+                    <div className="s">{ultimo(tipo, crono)}</div>
                   </div>
                 </button>
               ))}
             </div>
           </div>
 
-          <div className="pad" style={{ paddingTop: 22 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-              <div className="rotulo">Registro rápido</div>
-              <div style={{ fontSize: 10, color: 'var(--n-500)' }}>Mantén pulsado para detalle</div>
-            </div>
-            <div className="rejilla dos">
-              {RAPIDOS.map(({ tipo, etiqueta }) => {
-                const conHace = tipo === 'pañal' || tipo === 'baño';
-                return (
-                  <button key={tipo} className="celda"
-                          onPointerDown={alPulsar(tipo)} onPointerUp={alSoltar(tipo)}
-                          onPointerMove={alMover} onPointerLeave={cancelar}
-                          onPointerCancel={cancelar} onContextMenu={e => e.preventDefault()}>
-                    <Icono tipo={tipo} s={24} />
-                    {conHace ? (
-                      <div>
-                        <div className="t" style={{ textTransform: 'capitalize' }}>{etiqueta || tipo}</div>
-                        <div className="s">{ultimo(tipo)}</div>
-                      </div>
-                    ) : (
-                      <div className="t" style={{ textTransform: 'capitalize' }}>{etiqueta || tipo}</div>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
           <div className="pad" style={{ paddingTop: 24 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
               <div className="rotulo">Últimos registros</div>
-              <button onClick={() => setVista('hoy')}
+              <button onClick={() => setVista('semana')}
                       style={{ border: 0, background: 'none', padding: 0, color: 'var(--accent-600)', fontSize: 10.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase' }}>
                 Ver el día
               </button>
@@ -751,35 +757,6 @@ export default function App() {
             })}
             {!registrosDiarios.length && <p style={{ color: 'var(--n-600)', fontSize: 13 }}>Sin registros todavía.</p>}
           </div>
-        </section>
-      )}
-
-      {vista === 'hoy' && (
-        <section className="pantalla pad" style={{ paddingTop: 14 }}>
-          <div className="numeros" style={{ marginBottom: 20 }}>
-            <div><b>{delDia.filter(r => r.tipo_evento === 'teta').length}</b><span>Tomas</span></div>
-            <div><b>{delDia.filter(r => r.tipo_evento === 'sueño').length}</b><span>Sueños</span></div>
-            <div><b>{delDia.filter(r => ['pañal', 'pis', 'caca'].includes(r.tipo_evento)).length}</b><span>Pañales</span></div>
-          </div>
-          <div className="rotulo" style={{ marginBottom: 8 }}>Línea del día</div>
-          <hr className="regla" />
-          {delDia.length > 0 && (
-            <div style={{ fontSize: 10, color: 'var(--n-500)', padding: '8px 0 0' }}>Mantén pulsado para editar</div>
-          )}
-          {delDia.map(r => (
-            <button key={r.fila} className="linea"
-                    {...mantenerParaAbrir(() => setHoja({ tipo: r.tipo_evento, modo: 'editar', fila: r.fila, valores: r }))}>
-              <span className="hora">{reloj(fecha(r))}</span>
-              <span className="cuerpo">
-                <Icono tipo={r.tipo_evento} s={20} />
-                <span style={{ flex: 1 }}>
-                  <span className="t" style={{ display: 'block', fontSize: 13.5, fontWeight: 600, textTransform: 'capitalize' }}>{r.tipo_evento}</span>
-                  <span className="s" style={{ display: 'block', fontSize: 10.5, color: 'var(--n-600)' }}>{resumen(r)}</span>
-                </span>
-              </span>
-            </button>
-          ))}
-          {!delDia.length && <p style={{ color: 'var(--n-600)', fontSize: 13 }}>Nada registrado hoy.</p>}
         </section>
       )}
 
@@ -817,40 +794,45 @@ export default function App() {
           </div>
           <div className="dias">{(semana?.dias || []).map(d => <span key={d.dia}>{d.dia}</span>)}</div>
 
-          <div className="rotulo" style={{ margin: '26px 0 10px' }}>Sueño por día</div>
-          <hr className="regla" />
-          {(semana?.dias || []).map((d, i) => (
-            <div className="sueno" key={d.dia}>
-              <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', color: 'var(--n-600)' }}>{d.dia}</span>
-              <span className="pista"><i style={{ width: Math.min(100, Math.round((d.sueno_horas / 16) * 100)) + '%', background: i === 6 ? 'var(--accent)' : 'var(--n-700)' }} /></span>
-              <span className="v">{horasMin(d.sueno_horas)}</span>
-            </div>
-          ))}
-
-          {(semana?.peso || semana?.talla) && (
-            <>
-              <div className="rotulo" style={{ margin: '26px 0 10px' }}>Peso y talla</div>
-              <hr className="regla" />
-              <div style={{ display: 'flex', gap: 20, padding: '14px 0 16px', borderBottom: '1px solid var(--n-300)' }}>
-                {semana?.peso && (
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-.02em', lineHeight: 1 }}>
-                      {semana.peso.kg} <span style={{ fontSize: 16 }}>kg</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--n-600)', marginTop: 6 }}>{semana.peso.fecha}</div>
+          {(() => {
+            // Historial completo de peso_kg/talla_cm (de extra_(), no de esta
+            // semana sola): los últimos 10 valores de cada uno, más viejo
+            // primero. Escala entre el mínimo y el máximo del rango visible
+            // (no desde 0) para que la curva de crecimiento se note.
+            const conPeso = historialPeso.filter(r => r.peso_kg).slice(0, 10).reverse();
+            const conTalla = historialPeso.filter(r => r.talla_cm).slice(0, 10).reverse();
+            if (!conPeso.length && !conTalla.length) return null;
+            const escalar = (v, min, max) => 12 + Math.round(((v - min) / Math.max(.001, max - min)) * 108);
+            const grafico = (lista, campo, etiqueta) => {
+              const valores = lista.map(r => Number(r[campo]));
+              const min = Math.min.apply(null, valores), max = Math.max.apply(null, valores);
+              return (
+                <div style={{ marginBottom: 18 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--n-600)', marginBottom: 8 }}>{etiqueta}</div>
+                  <div className="barras" style={{ gridTemplateColumns: 'repeat(' + lista.length + ', 1fr)' }}>
+                    {lista.map((r, i) => (
+                      <div className="col" key={r.fila}>
+                        <div className="n">{r[campo]}</div>
+                        <div className={'b' + (i === lista.length - 1 ? ' hoy' : '')}
+                             style={{ height: escalar(Number(r[campo]), min, max) }} />
+                      </div>
+                    ))}
                   </div>
-                )}
-                {semana?.talla && (
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-.02em', lineHeight: 1 }}>
-                      {semana.talla.cm} <span style={{ fontSize: 16 }}>cm</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--n-600)', marginTop: 6 }}>{semana.talla.fecha}</div>
+                  <div className="dias" style={{ gridTemplateColumns: 'repeat(' + lista.length + ', 1fr)' }}>
+                    {lista.map(r => <span key={r.fila}>{fecha(r).toLocaleDateString('es', { day: 'numeric', month: 'short' })}</span>)}
                   </div>
-                )}
-              </div>
-            </>
-          )}
+                </div>
+              );
+            };
+            return (
+              <>
+                <div className="rotulo" style={{ margin: '26px 0 10px' }}>Peso y talla</div>
+                <hr className="regla" style={{ marginBottom: 12 }} />
+                {conPeso.length > 0 && grafico(conPeso, 'peso_kg', 'Peso (kg)')}
+                {conTalla.length > 0 && grafico(conTalla, 'talla_cm', 'Talla (cm)')}
+              </>
+            );
+          })()}
 
           {semana && (
             <button className="btn btn-primario" style={{ marginTop: 18 }} onClick={() => window.print()}>
@@ -864,6 +846,33 @@ export default function App() {
               <button className="btn btn-secundario" onClick={() => cargarSemana(semanaOffset)}>Reintentar</button>
             </div>
           )}
+
+          {/* Fusionado de la antigua pestaña "Hoy". */}
+          <div className="rotulo" style={{ margin: '30px 0 8px' }}>Hoy</div>
+          <hr className="regla" />
+          <div className="numeros" style={{ margin: '12px 0 20px', gridTemplateColumns: 'repeat(2, 1fr)' }}>
+            <div><b>{delDia.filter(r => r.tipo_evento === 'teta').length}</b><span>Tomas</span></div>
+            <div><b>{delDia.filter(r => ['pañal', 'pis', 'caca'].includes(r.tipo_evento)).length}</b><span>Pañales</span></div>
+          </div>
+          <div className="rotulo" style={{ marginBottom: 8 }}>Línea del día</div>
+          <hr className="regla" />
+          {delDia.length > 0 && (
+            <div style={{ fontSize: 10, color: 'var(--n-500)', padding: '8px 0 0' }}>Mantén pulsado para editar</div>
+          )}
+          {delDia.map(r => (
+            <button key={r.fila} className="linea"
+                    {...mantenerParaAbrir(() => setHoja({ tipo: r.tipo_evento, modo: 'editar', fila: r.fila, valores: r }))}>
+              <span className="hora">{reloj(fecha(r))}</span>
+              <span className="cuerpo">
+                <Icono tipo={r.tipo_evento} s={20} />
+                <span style={{ flex: 1 }}>
+                  <span className="t" style={{ display: 'block', fontSize: 13.5, fontWeight: 600, textTransform: 'capitalize' }}>{r.tipo_evento}</span>
+                  <span className="s" style={{ display: 'block', fontSize: 10.5, color: 'var(--n-600)' }}>{resumen(r)}</span>
+                </span>
+              </span>
+            </button>
+          ))}
+          {!delDia.length && <p style={{ color: 'var(--n-600)', fontSize: 13 }}>Nada registrado hoy.</p>}
         </section>
       )}
 
@@ -900,64 +909,6 @@ export default function App() {
             llamar({ accion: 'categorias_guardar', categorias: lista });
           }}
         />
-      )}
-
-      {vista === 'ajustes' && (
-        <section className="pantalla pad" style={{ paddingTop: 14 }}>
-          <div style={{ display: 'flex', gap: 14, alignItems: 'center', paddingBottom: 16, borderBottom: '2px solid var(--divider)' }}>
-            <div style={{ width: 64, height: 64, background: 'var(--accent)', display: 'grid', placeItems: 'center', flex: 'none' }}>
-              <Marca s={38} color="var(--text)" />
-            </div>
-            <div>
-              <div style={{ fontSize: 22, fontWeight: 800, lineHeight: 1 }}>{perfil.nombre}</div>
-              <div style={{ fontSize: 11.5, color: 'var(--n-600)', marginTop: 5 }}>{edad(perfil.nacimiento)}</div>
-            </div>
-          </div>
-
-          <div className="rotulo" style={{ margin: '20px 0 8px' }}>Editar datos</div>
-          <hr className="regla" />
-          <div className="campo">
-            <span className="rotulo">Nombre</span>
-            <input className="entrada-texto" value={perfil.nombre}
-                   onChange={e => setPerfil(p => ({ ...p, nombre: e.target.value }))} />
-          </div>
-          <div className="campo">
-            <span className="rotulo">Fecha de nacimiento</span>
-            <input className="entrada-texto" type="date" value={perfil.nacimiento}
-                   onChange={e => setPerfil(p => ({ ...p, nacimiento: e.target.value }))} />
-          </div>
-          <button className="btn btn-primario" style={{ marginTop: 4 }}
-                  onClick={() => llamar({ accion: 'perfil', ...perfil }).then(() => notificar('Datos guardados'))}>
-            Guardar datos
-          </button>
-
-          <div className="rotulo" style={{ margin: '20px 0 8px' }}>Datos</div>
-          <hr className="regla" />
-          <div style={{ padding: '12px 0', borderBottom: '1px solid var(--n-300)', fontSize: 13.5 }}>
-            Hoja de cálculo conectada · {pendientes ? pendientes + ' pendientes' : 'todo sincronizado'}
-          </div>
-          <div style={{ padding: '12px 0', borderBottom: '1px solid var(--n-300)', fontSize: 13.5, color: 'var(--n-600)' }}>
-            {ultimaSync ? 'Última sincronización: ' + hace(ultimaSync) : 'Todavía no sincronizó'}
-          </div>
-          <button className="btn btn-secundario" style={{ marginTop: 12 }} onClick={() => { vaciarCola(setPendientes); refrescar(); }}>
-            Volver a sincronizar
-          </button>
-
-          <div className="rotulo" style={{ margin: '20px 0 8px' }}>Recordatorios</div>
-          <hr className="regla" />
-          <div style={{ padding: '12px 0', borderBottom: '1px solid var(--n-300)', fontSize: 13.5 }}>
-            Aviso "Alimente al ácaro" 3 h después de la última toma ·{' '}
-            {notifPermiso === 'granted' ? 'activado'
-              : notifPermiso === 'no-disponible' ? 'no disponible en este navegador'
-              : 'desactivado'}
-          </div>
-          {notifPermiso !== 'granted' && notifPermiso !== 'no-disponible' && (
-            <button className="btn btn-secundario" style={{ marginTop: 12 }}
-                    onClick={() => Notification.requestPermission().then(setNotifPermiso)}>
-              Activar avisos
-            </button>
-          )}
-        </section>
       )}
 
       {/* Resumen impreso: sólo visible al imprimir */}
@@ -1018,6 +969,76 @@ export default function App() {
             setEditarInicio(false);
           }}
         />
+      )}
+
+      {/* Ajustes: antes era una pestaña del menú; como es información que
+          casi no cambia (perfil, estado de sync, permiso de avisos), ahora
+          se abre como hoja superpuesta desde el ícono de engranaje del
+          header, igual que HojaDetalle/EditarInicioSheet. */}
+      {ajustesAbierto && (
+        <>
+          <div className="fondo" onClick={() => setAjustesAbierto(false)} />
+          <div className="hoja" role="dialog" aria-label="Ajustes">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 16 }}>
+              <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+                <div style={{ width: 56, height: 56, background: 'var(--accent)', display: 'grid', placeItems: 'center', flex: 'none' }}>
+                  <Marca s={34} color="var(--text)" calado="var(--accent)" />
+                </div>
+                <div>
+                  <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1 }}>{perfil.nombre}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--n-600)', marginTop: 5 }}>{edad(perfil.nacimiento)}</div>
+                </div>
+              </div>
+              <button onClick={() => setAjustesAbierto(false)} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Cerrar">
+                <Icono tipo="cerrar" s={22} />
+              </button>
+            </div>
+
+            <div className="rotulo" style={{ margin: '4px 0 8px' }}>Editar datos</div>
+            <hr className="regla" />
+            <div className="campo">
+              <span className="rotulo">Nombre</span>
+              <input className="entrada-texto" value={perfil.nombre}
+                     onChange={e => setPerfil(p => ({ ...p, nombre: e.target.value }))} />
+            </div>
+            <div className="campo">
+              <span className="rotulo">Fecha de nacimiento</span>
+              <input className="entrada-texto" type="date" value={perfil.nacimiento}
+                     onChange={e => setPerfil(p => ({ ...p, nacimiento: e.target.value }))} />
+            </div>
+            <button className="btn btn-primario" style={{ marginTop: 4 }}
+                    onClick={() => llamar({ accion: 'perfil', ...perfil }).then(() => notificar('Datos guardados'))}>
+              Guardar datos
+            </button>
+
+            <div className="rotulo" style={{ margin: '20px 0 8px' }}>Datos</div>
+            <hr className="regla" />
+            <div style={{ padding: '12px 0', borderBottom: '1px solid var(--n-300)', fontSize: 13.5 }}>
+              Hoja de cálculo conectada · {pendientes ? pendientes + ' pendientes' : 'todo sincronizado'}
+            </div>
+            <div style={{ padding: '12px 0', borderBottom: '1px solid var(--n-300)', fontSize: 13.5, color: 'var(--n-600)' }}>
+              {ultimaSync ? 'Última sincronización: ' + hace(ultimaSync) : 'Todavía no sincronizó'}
+            </div>
+            <button className="btn btn-secundario" style={{ marginTop: 12 }} onClick={() => { vaciarCola(setPendientes); refrescar(); }}>
+              Volver a sincronizar
+            </button>
+
+            <div className="rotulo" style={{ margin: '20px 0 8px' }}>Recordatorios</div>
+            <hr className="regla" />
+            <div style={{ padding: '12px 0', borderBottom: '1px solid var(--n-300)', fontSize: 13.5 }}>
+              Aviso "Alimente al ácaro" 3 h después de la última toma ·{' '}
+              {notifPermiso === 'granted' ? 'activado'
+                : notifPermiso === 'no-disponible' ? 'no disponible en este navegador'
+                : 'desactivado'}
+            </div>
+            {notifPermiso !== 'granted' && notifPermiso !== 'no-disponible' && (
+              <button className="btn btn-secundario" style={{ marginTop: 12 }}
+                      onClick={() => Notification.requestPermission().then(setNotifPermiso)}>
+                Activar avisos
+              </button>
+            )}
+          </div>
+        </>
       )}
 
       {aviso && (
