@@ -34,6 +34,16 @@ export function consultar(action, extra = '') {
   return conTimeout(URL_APP + '?action=' + action + extra).catch(() => ({ ok: false, offline: true }));
 }
 
+// Migración única citas/medicamentos/tomas/esquema (localStorage → Sheet).
+// Sin cola offline: si falla, la app no marca la migración como hecha y
+// reintenta sola en la próxima apertura (fusionar_locales es idempotente
+// del lado del servidor, dedup por id_local).
+export function fusionarLocales(body) {
+  const payload = { cliente_hora: new Date().toISOString(), ...body };
+  return conTimeout(URL_APP, { method: 'POST', body: JSON.stringify(payload) }, 20000)
+    .catch(() => ({ ok: false, offline: true }));
+}
+
 // Sube un archivo (estudio). Sin cola offline: si falla, se avisa y se reintenta a mano.
 export function subirArchivo({ nombre, tipo, datos, descripcion, categoria }) {
   const payload = {
