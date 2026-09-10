@@ -426,7 +426,13 @@ function extra_() {
     citas: todos.filter(function (r) { return r.tipo_evento === 'cita'; }),
     medicamentos: todos.filter(function (r) { return r.tipo_evento === 'medicamento'; }),
     tomas_medicacion: todos.filter(function (r) { return r.tipo_evento === 'toma_medicacion'; }),
-    esquema: esquema_()
+    esquema: esquema_(),
+    // Historial completo (no sólo los últimos 60 registros de action=inicial)
+    // para que Registrar pueda mostrar la fecha real de Baño/Vacuna/Peso más
+    // allá de esa ventana corta, y para el gráfico de Peso y talla en el tiempo.
+    banos: todos.filter(function (r) { return r.tipo_evento === 'baño'; }),
+    vacunas: todos.filter(function (r) { return r.tipo_evento === 'vacuna'; }),
+    pesos: todos.filter(function (r) { return r.tipo_evento === 'peso'; })
   };
 }
 

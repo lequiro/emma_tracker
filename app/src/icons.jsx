@@ -39,16 +39,15 @@ export function Icono({ tipo, s = 24 }) {
   return <F s={s} />;
 }
 
-// La marca de la app: cara de bebé de trazo continuo.
-export function Marca({ s = 40, color = 'currentColor' }) {
+// La marca de la app: cara de bebé maciza en rosa, con los rasgos calados.
+export function Marca({ s = 40, color = 'var(--accent-600)', calado = 'var(--bg)' }) {
   return (
-    <svg width={s} height={s} viewBox="0 0 48 48" fill="none" stroke={color}
-         strokeWidth="2.8" strokeLinecap="round" aria-label="Emma">
-      <circle cx="24" cy="27" r="13" />
-      <path d="M11 16q13-10 26 0" />
-      <circle cx="19" cy="25" r="1.8" fill={color} stroke="none" />
-      <circle cx="29" cy="25" r="1.8" fill={color} stroke="none" />
-      <path d="M20 32q4 3 8 0" />
+    <svg width={s} height={s} viewBox="0 0 48 48" fill="none" aria-label="Emma">
+      <path d="M8 25a16 16 0 0 1 32 0v3a16 16 0 0 1-32 0z" fill={color} />
+      <path d="M14 14q10-8 20 0" stroke={color} strokeWidth="3.4" strokeLinecap="round" />
+      <circle cx="19" cy="25" r="2.4" fill={calado} />
+      <circle cx="29" cy="25" r="2.4" fill={calado} />
+      <path d="M19 32q5 3.6 10 0" stroke={calado} strokeWidth="2.8" strokeLinecap="round" />
     </svg>
   );
 }
