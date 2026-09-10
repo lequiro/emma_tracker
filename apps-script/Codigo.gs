@@ -26,7 +26,10 @@ var COLUMNAS = [
   'timestamp', 'tipo_evento', 'duracion_minutos', 'notas',
   'lado', 'cantidad_ml', 'contenido', 'consistencia', 'color',
   'crema', 'dosis', 'peso_kg', 'talla_cm', 'cliente_hora',
-  'archivo_url', 'archivo_nombre', 'archivo_categoria'
+  'archivo_url', 'archivo_nombre', 'archivo_categoria',
+  'id_local', 'cita_titulo', 'cita_lugar', 'cita_doctora', 'cita_telefono',
+  'cita_indicaciones', 'cita_aviso', 'cita_vacuna', 'cita_vacuna_id',
+  'med_nombre', 'med_dias', 'med_frecuencia_horas', 'med_fila'
 ];
 
 function hoja_() {
@@ -97,6 +100,18 @@ function categoriasEstudio_() {
 }
 function guardarCategoriasEstudio_(lista) {
   PropertiesService.getScriptProperties().setProperty('categorias_estudio', JSON.stringify(lista));
+}
+
+// Esquema de vacunación: igual que categorías, vive en PropertiesService (una
+// lista corta que cambia poco). Lista vacía si todavía nadie lo guardó desde
+// ningún celular (antes de la primera migración) — el cliente usa su propio
+// default en ese caso.
+function esquema_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('esquema');
+  return raw ? JSON.parse(raw) : [];
+}
+function guardarEsquemaSrv_(lista) {
+  PropertiesService.getScriptProperties().setProperty('esquema', JSON.stringify(lista));
 }
 
 // Carpeta de Drive donde se guardan los archivos subidos ("estudios").
@@ -235,6 +250,81 @@ function doPost(e) {
       return json_({ ok: true, categorias: lista });
     }
 
+    if (b.accion === 'esquema_guardar') {
+      var listaEsq = Array.isArray(b.esquema) ? b.esquema : [];
+      guardarEsquemaSrv_(listaEsq);
+      return json_({ ok: true, esquema: listaEsq });
+    }
+
+    // Migración única (por celular) de citas/medicamentos/tomas/esquema desde
+    // localStorage hacia la planilla: fusiona con lo que ya haya en el
+    // servidor sin pisar nada, dedup por el id_local que el cliente ya genera
+    // ('c'+Date.now(), 'm'+Date.now(), 'tm'+Date.now()). Idempotente: se puede
+    // reintentar sin duplicar (por eso el cliente sólo marca "migrado" si esta
+    // llamada respondió ok).
+    if (b.accion === 'fusionar_locales') {
+      var todosAntes = leerRegistros_();
+      var citasSrv = todosAntes.filter(function (r) { return r.tipo_evento === 'cita'; });
+      var medsSrv = todosAntes.filter(function (r) { return r.tipo_evento === 'medicamento'; });
+      var tomasSrv = todosAntes.filter(function (r) { return r.tipo_evento === 'toma_medicacion'; });
+
+      var idsCitas = {}; citasSrv.forEach(function (r) { if (r.id_local) idsCitas[r.id_local] = true; });
+      var idsMeds = {}; medsSrv.forEach(function (r) { if (r.id_local) idsMeds[r.id_local] = true; });
+      var idsTomas = {}; tomasSrv.forEach(function (r) { if (r.id_local) idsTomas[r.id_local] = true; });
+
+      // Fila real de cada medicamento por su id_local: primero lo que ya
+      // había en el servidor, después se completa con lo que se cree ahora —
+      // antes de procesar las tomas, que referencian esta fila (med_fila).
+      var filaPorIdMed = {};
+      medsSrv.forEach(function (r) { filaPorIdMed[r.id_local] = r.fila; });
+
+      var citasLocales = Array.isArray(b.citas) ? b.citas : [];
+      var medsLocales = Array.isArray(b.medicamentos) ? b.medicamentos : [];
+      var tomasLocales = Array.isArray(b.tomas_medicacion) ? b.tomas_medicacion : [];
+      var esquemaLocal = Array.isArray(b.esquema) ? b.esquema : [];
+
+      citasLocales.forEach(function (c) {
+        if (!c || !c.id || idsCitas[c.id]) return;
+        idsCitas[c.id] = true;
+        escribir_({
+          tipo_evento: 'cita', id_local: c.id, timestamp: c.iso,
+          cita_titulo: c.titulo || '', cita_lugar: c.lugar || '', cita_doctora: c.doctora || '',
+          cita_telefono: c.telefono || '', notas: c.nota || '', cita_indicaciones: c.indicaciones || '',
+          cita_aviso: c.aviso || '', cita_vacuna: c.vacuna ? 1 : '', cita_vacuna_id: c.vacunaId || ''
+        });
+      });
+
+      medsLocales.forEach(function (m) {
+        if (!m || !m.id || idsMeds[m.id]) return;
+        idsMeds[m.id] = true;
+        var filaNueva = escribir_({
+          tipo_evento: 'medicamento', id_local: m.id, timestamp: m.inicio,
+          med_nombre: m.nombre || '', med_dias: m.dias || 0, med_frecuencia_horas: m.frecuenciaHoras || 0
+        });
+        filaPorIdMed[m.id] = filaNueva;
+      });
+
+      tomasLocales.forEach(function (t) {
+        if (!t || !t.id || idsTomas[t.id]) return;
+        var filaMed = filaPorIdMed[t.medId];
+        if (!filaMed) return; // medicamento no encontrado (dato corrupto): se omite esta toma sin romper el resto
+        idsTomas[t.id] = true;
+        escribir_({ tipo_evento: 'toma_medicacion', id_local: t.id, timestamp: t.iso, med_fila: filaMed });
+      });
+
+      // Esquema: mismo criterio aditivo, dedup por id, nunca pisa lo que ya hay.
+      var listaEsquema = esquema_().slice();
+      var idsEsquema = {}; listaEsquema.forEach(function (v) { if (v && v.id) idsEsquema[v.id] = true; });
+      esquemaLocal.forEach(function (v) {
+        if (!v || !v.id || idsEsquema[v.id]) return;
+        idsEsquema[v.id] = true;
+        listaEsquema.push(v);
+      });
+      guardarEsquemaSrv_(listaEsquema);
+
+      return json_(Object.assign({ ok: true }, extra_()));
+    }
+
     if (b.accion === 'subir_archivo') {
       if (!b.datos) return json_({ ok: false, mensaje: 'Sin archivo' });
       var bytes = Utilities.base64Decode(b.datos);
@@ -326,12 +416,27 @@ function auditarInicioTetaSueno() {
   else Logger.log(sospechosas.length + ' fila(s) para revisar:\n' + sospechosas.join('\n'));
 }
 
+// Turnos, medicación (definición del tratamiento) y tomas registradas: viven
+// en la misma hoja que el resto (tipo_evento 'cita'/'medicamento'/
+// 'toma_medicacion'), leídos sin límite para no perder historial viejo. El
+// esquema de vacunación sigue en PropertiesService.
+function extra_() {
+  var todos = leerRegistros_();
+  return {
+    citas: todos.filter(function (r) { return r.tipo_evento === 'cita'; }),
+    medicamentos: todos.filter(function (r) { return r.tipo_evento === 'medicamento'; }),
+    tomas_medicacion: todos.filter(function (r) { return r.tipo_evento === 'toma_medicacion'; }),
+    esquema: esquema_()
+  };
+}
+
 function doGet(e) {
   var action = (e.parameter.action || 'inicial');
 
   if (action === 'estado') return json_(Object.assign({ ok: true }, estado_()));
   if (action === 'ultimos') return json_({ ok: true, registros: leerRegistros_(60) });
   if (action === 'perfil') return json_(Object.assign({ ok: true }, perfil_()));
+  if (action === 'extra') return json_(Object.assign({ ok: true }, extra_()));
 
   if (action === 'estudios') {
     var todos = leerRegistros_(); // sin límite: que no se pierdan estudios viejos entre el ruido diario

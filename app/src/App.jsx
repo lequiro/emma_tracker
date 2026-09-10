@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { consultar, llamar, leerCola, vaciarCola, subirArchivo } from './api.js';
+import { consultar, llamar, leerCola, vaciarCola, subirArchivo, fusionarLocales } from './api.js';
 import { Icono, Marca } from './icons.jsx';
 
 const NACIMIENTO = '2026-04-19';          // ajustar en Ajustes → perfil
@@ -128,6 +128,10 @@ const SECCIONES = [
   { id: 'ajustes', txt: 'Ajustes', icono: 'ajustes' },
 ];
 
+// Turnos, medicación y tomas ahora también viven en la planilla (ver Codigo.gs),
+// pero no son parte del feed diario de registros — se excluyen igual que "estudio".
+const TIPOS_NO_DIARIOS = ['estudio', 'cita', 'medicamento', 'toma_medicacion'];
+
 // datetime-local usa hora local sin zona horaria; convertimos en ambos sentidos.
 function aLocal(d) {
   const p = n => String(n).padStart(2, '0');
@@ -176,9 +180,14 @@ export default function App() {
     const v = Number(localStorage.getItem('ultima_sync_emma'));
     return v ? new Date(v) : null;
   });
-  const [esquema, setEsquemaState] = useState(() => leerEsquema());
-  const [medicamentos, setMedicamentosState] = useState(() => leerMedicamentos());
-  const [tomasMed, setTomasMedState] = useState(() => leerTomasMed());
+  // Citas/esquema/medicamentos/tomas: primero la cache unificada (ya sincronizada
+  // con el servidor en una sesión anterior); si todavía no hay nada ahí (recién
+  // instalada esta versión), caen a las claves viejas de localStorage —
+  // dedicadas a cada una — que es donde vivía todo esto antes de la migración.
+  const [citas, setCitasState] = useState(() => leerCacheDatos().citas || leerCitas());
+  const [esquema, setEsquemaState] = useState(() => leerCacheDatos().esquema || leerEsquema());
+  const [medicamentos, setMedicamentosState] = useState(() => leerCacheDatos().medicamentos || leerMedicamentos());
+  const [tomasMed, setTomasMedState] = useState(() => leerCacheDatos().tomasMed || leerTomasMed());
   const [avisosMed, setAvisosMed] = useState([]); // ids de medicamentos con dosis vencida
   const pulsacion = useRef(null);
   const sostenido = useRef(false);
@@ -187,21 +196,62 @@ export default function App() {
   const avisadosMedRef = useRef(new Set());
   const perfilCargado = useRef(false); // sólo se toma del servidor una vez, para no pisar una edición en curso
 
+  // Esquema sigue siendo un reemplazo completo (como categorias_guardar): no
+  // hace falta refrescar desde el servidor después, lo que se manda es
+  // exactamente lo que va a quedar guardado.
   function persistirEsquemaApp(lista) {
     setEsquemaState(lista);
-    guardarEsquema(lista);
+    llamar({ accion: 'esquema_guardar', esquema: lista }).then(res => { if (res.offline) setPendientes(leerCola().length); });
   }
-  function persistirMedicamentos(lista) {
-    setMedicamentosState(lista);
-    guardarMedicamentos(lista);
+
+  // Turnos y medicación ahora son filas de la planilla: además del estado
+  // optimista, hay que escribir/corregir la fila y después refrescar desde
+  // el servidor (cargarExtra) para quedarse con la fila real — necesaria
+  // para poder editar/borrar ese mismo turno o medicamento más adelante.
+  function guardarCitaApp(c, esNueva) {
+    setCitasState(prev => {
+      const lista = esNueva ? [...prev, c] : prev.map(x => x.id === c.id ? c : x);
+      return [...lista].sort((a, b) => a.iso.localeCompare(b.iso));
+    });
+    const campos = {
+      cita_titulo: c.titulo, cita_lugar: c.lugar, cita_doctora: c.doctora, cita_telefono: c.telefono,
+      notas: c.nota, cita_indicaciones: c.indicaciones, cita_aviso: c.aviso,
+      cita_vacuna: c.vacuna ? 1 : '', cita_vacuna_id: c.vacunaId || '',
+    };
+    const llamada = esNueva
+      ? llamar({ tipo_evento: 'cita', id_local: c.id, timestamp: c.iso, ...campos })
+      : llamar({ accion: 'corregir', fila: c.fila, timestamp: c.iso, ...campos });
+    llamada.then(res => { if (res.offline) setPendientes(leerCola().length); cargarExtra(); });
+  }
+  function borrarCitaApp(c) {
+    setCitasState(prev => prev.filter(x => x.id !== c.id));
+    if (c.fila) llamar({ accion: 'eliminar', fila: c.fila }).then(() => cargarExtra());
+  }
+  function guardarMedicamentoApp(m, esNueva) {
+    setMedicamentosState(prev => esNueva ? [...prev, m] : prev.map(x => x.id === m.id ? m : x));
+    const campos = { med_nombre: m.nombre, med_dias: m.dias, med_frecuencia_horas: m.frecuenciaHoras };
+    const llamada = esNueva
+      ? llamar({ tipo_evento: 'medicamento', id_local: m.id, timestamp: m.inicio, ...campos })
+      : llamar({ accion: 'corregir', fila: m.fila, timestamp: m.inicio, ...campos });
+    llamada.then(res => { if (res.offline) setPendientes(leerCola().length); cargarExtra(); });
+  }
+  function borrarMedicamentoApp(m) {
+    setMedicamentosState(prev => prev.filter(x => x.id !== m.id));
+    if (m.fila) llamar({ accion: 'eliminar', fila: m.fila }).then(() => cargarExtra());
   }
   function registrarToma(medId) {
+    const med = medicamentos.find(m => m.id === medId);
     const nueva = { id: 'tm' + Date.now(), medId, iso: new Date().toISOString() };
-    const lista = [nueva, ...tomasMed];
-    setTomasMedState(lista);
-    guardarTomasMed(lista);
+    setTomasMedState(lista => [nueva, ...lista]);
     avisadosMedRef.current.delete(medId);
     setAvisosMed(a => a.filter(id => id !== medId));
+    // Si el medicamento todavía no tiene fila (recién creado, no terminó de
+    // sincronizar) esta toma queda sólo optimista hasta el próximo
+    // cargarExtra(): caso borde raro, no vale la pena bloquear el botón por esto.
+    if (med && med.fila) {
+      llamar({ tipo_evento: 'toma_medicacion', id_local: nueva.id, timestamp: nueva.iso, med_fila: med.fila })
+        .then(() => cargarExtra());
+    }
   }
   function proximaDosisMed(med) {
     const tomasDelMed = tomasMed.filter(t => t.medId === med.id).sort((a, b) => b.iso.localeCompare(a.iso));
@@ -275,6 +325,58 @@ export default function App() {
     };
   }, [refrescar]);
 
+  // Adapta la respuesta de action=extra (filas del Sheet) y la vuelca en el
+  // estado de App + la cache unificada, en la forma de objeto que ya usan
+  // PantallaCitas/PantallaVacunas (ver filaACita/filaAMedicamento/filaAToma).
+  const adoptarExtra = r => {
+    const citasNuevas = (r.citas || []).map(filaACita).sort((a, b) => a.iso.localeCompare(b.iso));
+    const medsNuevos = (r.medicamentos || []).map(filaAMedicamento);
+    const medsPorFila = {};
+    medsNuevos.forEach(m => { medsPorFila[m.fila] = m.id; });
+    const tomasNuevas = (r.tomas_medicacion || []).map(row => filaAToma(row, medsPorFila));
+    const esquemaNuevo = (r.esquema && r.esquema.length) ? r.esquema : ESQUEMA_DEFECTO;
+    setCitasState(citasNuevas);
+    setMedicamentosState(medsNuevos);
+    setTomasMedState(tomasNuevas);
+    setEsquemaState(esquemaNuevo);
+    guardarCacheDatos({ citas: citasNuevas, medicamentos: medsNuevos, tomasMed: tomasNuevas, esquema: esquemaNuevo });
+  };
+
+  // Turnos/medicación/esquema se piden aparte de action=inicial (no en cada
+  // refrescar()) para no regresionar el pintado instantáneo del feed diario:
+  // sólo hace falta al montar la app, al tocar "Actualizar" en esas pantallas,
+  // o después de crear/editar/borrar un turno o medicamento.
+  const cargarExtra = useCallback(() => {
+    consultar('extra').then(r => { if (r.ok) adoptarExtra(r); });
+  }, []); // eslint-disable-line
+
+  // Migración única (por celular) de citas/medicamentos/tomas/esquema desde
+  // localStorage hacia la planilla. Sólo se marca migrado si el servidor
+  // respondió ok y no offline; si no, no se toca la marca y se reintenta sola
+  // la próxima vez que se abra la app (fusionar_locales es idempotente del
+  // lado del servidor, dedup por id_local, así que reintentar no duplica nada).
+  useEffect(() => {
+    if (localStorage.getItem(MIGRADO_LS)) { cargarExtra(); return; }
+    fusionarLocales({
+      accion: 'fusionar_locales',
+      citas: leerCitas(), medicamentos: leerMedicamentos(),
+      tomas_medicacion: leerTomasMed(), esquema: leerEsquema(),
+    }).then(r => {
+      if (r.ok && !r.offline) {
+        try { localStorage.setItem(MIGRADO_LS, '1'); } catch { /* localStorage bloqueado, no pasa nada */ }
+        adoptarExtra(r);
+      }
+    });
+  }, []); // eslint-disable-line
+
+  // Guarda citas/esquema/medicamentos/tomas en la cache unificada cada vez
+  // que cambian (vengan del servidor o de una edición local), para pintar de
+  // una con lo último conocido en la próxima apertura — mismo criterio que
+  // ya se usa para "perfil".
+  useEffect(() => {
+    guardarCacheDatos({ citas, medicamentos, tomasMed, esquema });
+  }, [citas, medicamentos, tomasMed, esquema]);
+
   const cargarSemana = useCallback(offset => {
     setSemanaError(false);
     consultar('semana', '&offset=' + offset).then(r => {
@@ -322,6 +424,7 @@ export default function App() {
     refrescar();
     if (vista === 'semana') cargarSemana(semanaOffset);
     if (vista === 'estudios') cargarEstudios();
+    if (vista === 'citas' || vista === 'vacunas') cargarExtra();
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {});
     }
@@ -503,8 +606,9 @@ export default function App() {
     return r ? 'Hace ' + hace(fin ? finDe(r) : fecha(r)) : 'Sin registros';
   };
 
-  // Los "estudios" tienen su propia pestaña; no se mezclan con el feed diario.
-  const registrosDiarios = useMemo(() => registros.filter(r => r.tipo_evento !== 'estudio'), [registros]);
+  // Los "estudios", turnos, medicación y tomas tienen su propia pestaña; no
+  // se mezclan con el feed diario.
+  const registrosDiarios = useMemo(() => registros.filter(r => !TIPOS_NO_DIARIOS.includes(r.tipo_evento)), [registros]);
 
   const delDia = useMemo(() => {
     const hoy = new Date().toDateString();
@@ -765,13 +869,15 @@ export default function App() {
 
       {vista === 'citas' && (
         <PantallaCitas registros={registros} perfil={perfil} esquema={esquema} medicamentos={medicamentos}
+                       citas={citas} onGuardarCita={guardarCitaApp} onBorrarCita={borrarCitaApp}
                        onVerVacunas={() => setVista('vacunas')} />
       )}
 
       {vista === 'vacunas' && (
         <PantallaVacunas registros={registros} perfil={perfil} esquema={esquema} onEsquemaChange={persistirEsquemaApp}
-                         medicamentos={medicamentos} onMedicamentosChange={persistirMedicamentos}
-                         tomasMed={tomasMed} onRegistrarToma={registrarToma} />
+                         medicamentos={medicamentos} onGuardarMedicamento={guardarMedicamentoApp} onBorrarMedicamento={borrarMedicamentoApp}
+                         tomasMed={tomasMed} onRegistrarToma={registrarToma}
+                         citas={citas} onGuardarCita={guardarCitaApp} />
       )}
 
       {vista === 'estudios' && (
@@ -1247,6 +1353,11 @@ function PantallaEstudios({ estudios, error: cargaError, carpeta, categorias, on
 // las vacunas cruzan el esquema oficial con los registros tipo "vacuna".
 const CITAS_LS = 'citas_emma';
 const ESQUEMA_LS = 'esquema_vacunas_emma';
+// Marca de que este celular ya mandó su localStorage viejo al servidor
+// (fusionar_locales). Una vez seteada, no se vuelve a leer citas_emma /
+// esquema_vacunas_emma / medicamentos_emma / medicamentos_tomas_emma: quedan
+// como respaldo inerte en el teléfono, sin tocarlas.
+const MIGRADO_LS = 'migrado_sync_v1';
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const DIAS_SEMANA = ['Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sá', 'Do'];
 
@@ -1265,11 +1376,13 @@ const ESQUEMA_DEFECTO = [
 ];
 const edadDosis = mes => mes <= 0 ? 'Al nacer' : mes + ' meses';
 
+// Estas "leerX" ya sólo se usan una vez, al montar la app, para mandar lo que
+// haya en el celular a fusionar_locales (ver MIGRADO_LS más arriba); las
+// claves quedan como respaldo inerte, no se vuelve a escribir en ellas —
+// turnos, medicación y esquema ahora viven en la planilla / PropertiesService
+// y se cachean con guardarCacheDatos, como el resto de los datos del server.
 function leerCitas() {
   try { return JSON.parse(localStorage.getItem(CITAS_LS) || '[]'); } catch { return []; }
-}
-function guardarCitas(lista) {
-  try { localStorage.setItem(CITAS_LS, JSON.stringify(lista)); } catch { }
 }
 function leerEsquema() {
   try {
@@ -1277,26 +1390,39 @@ function leerEsquema() {
     return Array.isArray(guardado) && guardado.length ? guardado : ESQUEMA_DEFECTO;
   } catch { return ESQUEMA_DEFECTO; }
 }
-function guardarEsquema(lista) {
-  try { localStorage.setItem(ESQUEMA_LS, JSON.stringify(lista)); } catch { }
-}
 
-// Medicación: se guarda en el celular igual que citas y esquema (no va a la
-// hoja de cálculo todavía). "dias" y "frecuenciaHoras" arman el calendario
-// de dosis; "tomasMed" es el registro de cada toma efectivamente marcada.
 const MEDS_LS = 'medicamentos_emma';
 const MEDS_TOMAS_LS = 'medicamentos_tomas_emma';
 function leerMedicamentos() {
   try { return JSON.parse(localStorage.getItem(MEDS_LS) || '[]'); } catch { return []; }
 }
-function guardarMedicamentos(lista) {
-  try { localStorage.setItem(MEDS_LS, JSON.stringify(lista)); } catch { }
-}
 function leerTomasMed() {
   try { return JSON.parse(localStorage.getItem(MEDS_TOMAS_LS) || '[]'); } catch { return []; }
 }
-function guardarTomasMed(lista) {
-  try { localStorage.setItem(MEDS_TOMAS_LS, JSON.stringify(lista)); } catch { }
+
+// Adaptadores entre las filas de la planilla (tipo_evento 'cita'/'medicamento'/
+// 'toma_medicacion', ver Codigo.gs) y la forma de objeto que ya usaban
+// PantallaCitas/PantallaVacunas cuando esto vivía sólo en localStorage — así
+// el resto de esas pantallas no tuvo que cambiar.
+function filaACita(r) {
+  return {
+    id: r.id_local, fila: r.fila, titulo: r.cita_titulo || '', iso: r.iso,
+    lugar: r.cita_lugar || '', doctora: r.cita_doctora || '', telefono: r.cita_telefono || '',
+    nota: r.notas || '', indicaciones: r.cita_indicaciones || '', aviso: r.cita_aviso || '1 día antes',
+    vacuna: !!r.cita_vacuna, vacunaId: r.cita_vacuna_id || null,
+  };
+}
+function filaAMedicamento(r) {
+  return {
+    id: r.id_local, fila: r.fila, nombre: r.med_nombre || '',
+    dias: Number(r.med_dias) || 0, frecuenciaHoras: Number(r.med_frecuencia_horas) || 0,
+    inicio: r.iso,
+  };
+}
+// medsPorFila: { [fila del medicamento]: id_local } — para reconstruir medId
+// a partir de med_fila, que es lo único que guarda la fila de la toma.
+function filaAToma(r, medsPorFila) {
+  return { id: r.id_local, fila: r.fila, medId: medsPorFila[r.med_fila] || null, iso: r.iso };
 }
 
 // Une, para un mismo día del calendario, lo que hay que marcar: citas reales,
@@ -1331,18 +1457,11 @@ function vacunasConEstado(esquema, registros, futuras, edadMeses) {
   });
 }
 
-function PantallaCitas({ registros, perfil, esquema, medicamentos, onVerVacunas }) {
-  const [citas, setCitas] = useState(() => leerCitas().sort((a, b) => a.iso.localeCompare(b.iso)));
+function PantallaCitas({ registros, perfil, esquema, medicamentos, citas, onGuardarCita, onBorrarCita, onVerVacunas }) {
   const [mes, setMes] = useState(() => { const d = new Date(); return { a: d.getFullYear(), m: d.getMonth() }; });
   const [sel, setSel] = useState(null);
   const [hoja, setHoja] = useState(null); // 'nueva' | cita | {prefillVacuna}
   const [verHistorial, setVerHistorial] = useState(false);
-
-  function persistir(lista) {
-    const orden = [...lista].sort((a, b) => a.iso.localeCompare(b.iso));
-    setCitas(orden);
-    guardarCitas(orden);
-  }
 
   const corte = new Date(Date.now() - 6 * 3600000);
   // Se descartan citas con fecha inválida en vez de dejar que desaparezcan
@@ -1501,8 +1620,8 @@ function PantallaCitas({ registros, perfil, esquema, medicamentos, onVerVacunas 
           cita={hoja && hoja.prefillVacuna ? null : (hoja === 'nueva' ? null : hoja)}
           prefillVacuna={hoja && hoja.prefillVacuna}
           onCerrar={() => setHoja(null)}
-          onGuardar={c => { persistir((hoja === 'nueva' || hoja.prefillVacuna) ? [...citas, c] : citas.map(x => x.id === c.id ? c : x)); setHoja(null); }}
-          onBorrar={id => { persistir(citas.filter(x => x.id !== id)); setHoja(null); }}
+          onGuardar={c => { onGuardarCita(c, hoja === 'nueva' || !!hoja.prefillVacuna); setHoja(null); }}
+          onBorrar={c => { onBorrarCita(c); setHoja(null); }}
         />
       )}
     </section>
@@ -1581,10 +1700,10 @@ function HojaCita({ cita, prefillVacuna, onCerrar, onGuardar, onBorrar }) {
                     value={indicaciones} onChange={e => setIndicaciones(e.target.value)} />
         </div>
         <div className="acciones">
-          <button onClick={() => (cita ? onBorrar(cita.id) : onCerrar())}>{cita ? 'Borrar' : 'Cancelar'}</button>
+          <button onClick={() => (cita ? onBorrar(cita) : onCerrar())}>{cita ? 'Borrar' : 'Cancelar'}</button>
           <button className="guardar" disabled={!titulo.trim()}
                   onClick={() => onGuardar({
-                    id: cita ? cita.id : 'c' + Date.now(),
+                    id: cita ? cita.id : 'c' + Date.now(), fila: cita ? cita.fila : undefined,
                     titulo: titulo.trim(), iso: deLocalISO(cuando), lugar, doctora, telefono, nota, indicaciones, aviso, vacuna,
                     vacunaId: vacuna ? vacunaId : null,
                   })}>
@@ -1609,11 +1728,10 @@ function agruparVacunas(vacunas) {
   return grupos;
 }
 
-function PantallaVacunas({ registros, perfil, esquema, onEsquemaChange, medicamentos, onMedicamentosChange, tomasMed, onRegistrarToma }) {
+function PantallaVacunas({ registros, perfil, esquema, onEsquemaChange, medicamentos, onGuardarMedicamento, onBorrarMedicamento, tomasMed, onRegistrarToma, citas, onGuardarCita }) {
   const [mes, setMes] = useState(() => { const d = new Date(); return { a: d.getFullYear(), m: d.getMonth() }; });
   const [sel, setSel] = useState(null);
   const [hoja, setHoja] = useState(null); // 'esquema' | 'medNueva' | medicamento | {prefillVacuna}
-  const [citas, setCitas] = useState(() => leerCitas());
 
   const nacimiento = perfil?.nacimiento || NACIMIENTO;
   const edadMeses = mesesDeVida(nacimiento);
@@ -1748,11 +1866,8 @@ function PantallaVacunas({ registros, perfil, esquema, onEsquemaChange, medicame
         <HojaMedicamento
           medicamento={hoja === 'medNueva' ? null : hoja}
           onCerrar={() => setHoja(null)}
-          onGuardar={m => {
-            onMedicamentosChange(hoja === 'medNueva' ? [...medicamentos, m] : medicamentos.map(x => x.id === m.id ? m : x));
-            setHoja(null);
-          }}
-          onBorrar={id => { onMedicamentosChange(medicamentos.filter(x => x.id !== id)); setHoja(null); }}
+          onGuardar={m => { onGuardarMedicamento(m, hoja === 'medNueva'); setHoja(null); }}
+          onBorrar={m => { onBorrarMedicamento(m); setHoja(null); }}
         />
       )}
       {hoja && hoja.prefillVacuna && (
@@ -1760,12 +1875,7 @@ function PantallaVacunas({ registros, perfil, esquema, onEsquemaChange, medicame
           cita={null}
           prefillVacuna={hoja.prefillVacuna}
           onCerrar={() => setHoja(null)}
-          onGuardar={c => {
-            const lista = [...citas, c];
-            setCitas(lista);
-            guardarCitas(lista);
-            setHoja(null);
-          }}
+          onGuardar={c => { onGuardarCita(c, true); setHoja(null); }}
           onBorrar={() => setHoja(null)}
         />
       )}
@@ -1810,10 +1920,10 @@ function HojaMedicamento({ medicamento, onCerrar, onGuardar, onBorrar }) {
           <input className="entrada-texto" inputMode="numeric" value={frecuenciaHoras} onChange={e => setFrecuenciaHoras(e.target.value)} />
         </div>
         <div className="acciones">
-          <button onClick={() => (medicamento ? onBorrar(medicamento.id) : onCerrar())}>{medicamento ? 'Borrar' : 'Cancelar'}</button>
+          <button onClick={() => (medicamento ? onBorrar(medicamento) : onCerrar())}>{medicamento ? 'Borrar' : 'Cancelar'}</button>
           <button className="guardar" disabled={!nombre.trim() || !Number(dias) || !Number(frecuenciaHoras)}
                   onClick={() => onGuardar({
-                    id: medicamento ? medicamento.id : 'm' + Date.now(),
+                    id: medicamento ? medicamento.id : 'm' + Date.now(), fila: medicamento ? medicamento.fila : undefined,
                     nombre: nombre.trim(), dias: Number(dias), frecuenciaHoras: Number(frecuenciaHoras),
                     inicio: deLocalISO(inicio),
                   })}>
