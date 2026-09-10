@@ -182,22 +182,26 @@ textarea.entrada-texto{resize:vertical;min-height:64px;line-height:1.4;font-fami
 .cal button{border:0;background:var(--bg);padding:11px 0 9px;display:flex;flex-direction:column;align-items:center;gap:5px;font-size:13px;font-weight:800;font-variant-numeric:tabular-nums;min-height:44px;color:var(--text)}
 .cal button.off{background:var(--surface)}
 .cal button.sel{background:var(--text);color:var(--bg)}
-.cal .pt{width:6px;height:6px}
-.cal .pt.cita{background:var(--accent-600)}
-.cal .pt.vac{background:var(--text)}
-.cal .pt.alerta{background:var(--accent-700)}
-.cal .pt.med{background:var(--n-500)}
-.cal button.sel .pt.cita,.cal button.sel .pt.vac,.cal button.sel .pt.alerta,.cal button.sel .pt.med{background:var(--accent)}
+/* Cada día puede tener más de una marca a la vez (.pts las alinea en fila),
+   y cada tipo se distingue por color Y forma (no sólo color), para que se
+   entienda de un vistazo sin tener que memorizar la leyenda. Mismas reglas
+   para el calendario (.cal .pt) y la leyenda (.leyenda i). "vturno" (no
+   "vac": ese nombre ya lo usa, sin relación, la fila de una dosis más abajo
+   — .vac/.vac .p/.vac .d — así que hay que evitar que choquen). */
+.pts{display:flex;align-items:center;gap:3px;height:7px}
+.cal .pt,.leyenda i{width:6px;height:6px;display:block;flex:none}
+.cal .pt.cita,.leyenda i.cita{background:var(--accent-600)}
+.cal .pt.vturno,.leyenda i.vturno{background:var(--text);border-radius:50%}
+.cal .pt.proxima,.leyenda i.proxima{width:5px;height:5px;background:none;border:1.3px solid var(--accent-600);border-radius:50%}
+.cal .pt.alerta,.leyenda i.alerta{width:8px;height:7px;background:var(--accent-700);clip-path:polygon(50% 0%,0% 100%,100% 100%)}
+.cal .pt.med,.leyenda i.med{width:8px;height:3px;background:var(--n-500)}
+.cal button.sel .pt.cita,.cal button.sel .pt.vturno,.cal button.sel .pt.alerta,.cal button.sel .pt.med{background:var(--accent)}
+.cal button.sel .pt.proxima{border-color:var(--accent)}
 .leyenda{display:flex;align-items:center;gap:6px;font-size:10px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;color:var(--n-600)}
-.leyenda i{width:6px;height:6px;display:block}
-.leyenda i.cita{background:var(--accent-600)}
-.leyenda i.vac{background:var(--text)}
-.leyenda i.alerta{background:var(--accent-700)}
-.leyenda i.med{background:var(--n-500)}
 .estrellas{display:flex;gap:2px;color:var(--accent-600)}
 .med-item{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid var(--n-300)}
 .vac{display:grid;grid-template-columns:22px 1fr auto;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid var(--n-300)}
 .vac.hecha{color:var(--n-500)}
-.vac .p{font-size:10.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;background:var(--accent);color:var(--text);padding:6px 8px}
+.vac .p{border:0;font-size:10.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;background:var(--accent);color:var(--text);padding:6px 8px}
 .vac .p.urgente{background:var(--text);color:var(--bg)}
 .vac .d{font-size:10.5px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--n-500)}

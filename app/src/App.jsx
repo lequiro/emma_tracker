@@ -55,6 +55,11 @@ const DETALLE = {
   ],
 };
 
+// Una fila optimista recién creada (ver registrar()) usa un id temporal
+// 'tmp-...' hasta que el servidor confirma la real: no sirve para corregir
+// o eliminar todavía.
+const filaReal = f => f != null && !String(f).startsWith('tmp-');
+
 const dosD = n => String(n).padStart(2, '0');
 const reloj = d => dosD(d.getHours()) + ':' + dosD(d.getMinutes());
 
@@ -260,6 +265,51 @@ export default function App() {
       llamar({ tipo_evento: 'toma_medicacion', id_local: nueva.id, timestamp: nueva.iso, med_fila: med.fila })
         .then(() => cargarExtra());
     }
+  }
+  // Editar/backdatear "la última toma" (no crea una toma nueva salvo que
+  // todavía no hubiera ninguna): corrige in situ la más reciente, para el
+  // caso "me olvidé de tocar Tomé ahora y quiero poner la hora a mano".
+  function editarUltimaTomaApp(medId, iso) {
+    const med = medicamentos.find(m => m.id === medId);
+    const ultima = tomasMed.filter(t => t.medId === medId).sort((a, b) => b.iso.localeCompare(a.iso))[0];
+    if (ultima && ultima.fila) {
+      setTomasMedState(lista => lista.map(t => t.id === ultima.id ? { ...t, iso } : t));
+      llamar({ accion: 'corregir', fila: ultima.fila, timestamp: iso }).then(() => cargarExtra());
+    } else {
+      const nueva = { id: 'tm' + Date.now(), medId, iso };
+      setTomasMedState(lista => [nueva, ...lista]);
+      if (med && med.fila) {
+        llamar({ tipo_evento: 'toma_medicacion', id_local: nueva.id, timestamp: iso, med_fila: med.fila }).then(() => cargarExtra());
+      }
+    }
+    avisadosMedRef.current.delete(medId);
+    setAvisosMed(a => a.filter(id => id !== medId));
+  }
+  function borrarUltimaTomaApp(medId) {
+    const ultima = tomasMed.filter(t => t.medId === medId).sort((a, b) => b.iso.localeCompare(a.iso))[0];
+    if (!ultima) return;
+    setTomasMedState(lista => lista.filter(t => t.id !== ultima.id));
+    if (ultima.fila) llamar({ accion: 'eliminar', fila: ultima.fila }).then(() => cargarExtra());
+  }
+  // Igual que arriba pero para una dosis del esquema de vacunas: corrige el
+  // registro ya matcheado (v.puesta) si existe, o crea uno nuevo con la
+  // fecha elegida a mano (equivalente a cargarla desde Registrar, pero con
+  // fecha propia en vez de "ahora").
+  function editarVacunaApp(v, iso) {
+    if (v.puesta && filaReal(v.puesta.fila)) {
+      setHistorialVacuna(lista => lista.map(r => r.fila === v.puesta.fila ? { ...r, iso, timestamp: iso } : r));
+      setRegistros(lista => lista.map(r => r.fila === v.puesta.fila ? { ...r, iso, timestamp: iso } : r));
+      llamar({ accion: 'corregir', fila: v.puesta.fila, timestamp: iso }).then(() => cargarExtra());
+    } else {
+      llamar({ tipo_evento: 'vacuna', id_local: 'r' + Date.now(), timestamp: iso, dosis: v.nombre }).then(() => cargarExtra());
+    }
+  }
+  function borrarVacunaApp(v) {
+    if (!v.puesta || !filaReal(v.puesta.fila)) return;
+    const fila = v.puesta.fila;
+    setHistorialVacuna(lista => lista.filter(r => r.fila !== fila));
+    setRegistros(lista => lista.filter(r => r.fila !== fila));
+    llamar({ accion: 'eliminar', fila }).then(() => cargarExtra());
   }
   function proximaDosisMed(med) {
     const tomasDelMed = tomasMed.filter(t => t.medId === med.id).sort((a, b) => b.iso.localeCompare(a.iso));
@@ -797,39 +847,58 @@ export default function App() {
           {(() => {
             // Historial completo de peso_kg/talla_cm (de extra_(), no de esta
             // semana sola): los últimos 10 valores de cada uno, más viejo
-            // primero. Escala entre el mínimo y el máximo del rango visible
-            // (no desde 0) para que la curva de crecimiento se note.
+            // primero. Un solo scatterplot con eje de tiempo compartido y
+            // escala propia por serie (kg y cm no se comparan en valor
+            // absoluto), para ver la curva de crecimiento real superpuesta.
             const conPeso = historialPeso.filter(r => r.peso_kg).slice(0, 10).reverse();
             const conTalla = historialPeso.filter(r => r.talla_cm).slice(0, 10).reverse();
             if (!conPeso.length && !conTalla.length) return null;
-            const escalar = (v, min, max) => 12 + Math.round(((v - min) / Math.max(.001, max - min)) * 108);
-            const grafico = (lista, campo, etiqueta) => {
+
+            const fechas = [...conPeso, ...conTalla].map(r => fecha(r).getTime());
+            const fMin = Math.min.apply(null, fechas), fMax = Math.max.apply(null, fechas);
+            const rangoF = Math.max(1, fMax - fMin);
+            const ANCHO = 300, ALTO = 176, IZQ = 14, DER = 14, ARRIBA = 18, ABAJO = 32;
+            const ejeX = t => IZQ + ((t - fMin) / rangoF) * (ANCHO - IZQ - DER);
+
+            const serie = (lista, campo) => {
+              if (!lista.length) return [];
               const valores = lista.map(r => Number(r[campo]));
               const min = Math.min.apply(null, valores), max = Math.max.apply(null, valores);
-              return (
-                <div style={{ marginBottom: 18 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--n-600)', marginBottom: 8 }}>{etiqueta}</div>
-                  <div className="barras" style={{ gridTemplateColumns: 'repeat(' + lista.length + ', 1fr)' }}>
-                    {lista.map((r, i) => (
-                      <div className="col" key={r.fila}>
-                        <div className="n">{r[campo]}</div>
-                        <div className={'b' + (i === lista.length - 1 ? ' hoy' : '')}
-                             style={{ height: escalar(Number(r[campo]), min, max) }} />
-                      </div>
-                    ))}
-                  </div>
-                  <div className="dias" style={{ gridTemplateColumns: 'repeat(' + lista.length + ', 1fr)' }}>
-                    {lista.map(r => <span key={r.fila}>{fecha(r).toLocaleDateString('es', { day: 'numeric', month: 'short' })}</span>)}
-                  </div>
-                </div>
-              );
+              const rango = Math.max(.001, max - min);
+              const ejeY = v => ARRIBA + (1 - (v - min) / rango) * (ALTO - ARRIBA - ABAJO);
+              return lista.map(r => ({ v: r[campo], x: ejeX(fecha(r).getTime()), y: ejeY(Number(r[campo])), fila: r.fila }));
             };
+            const sPeso = serie(conPeso, 'peso_kg');
+            const sTalla = serie(conTalla, 'talla_cm');
+            const puntos = lista => lista.map(p => p.x + ',' + p.y).join(' ');
+            const fmtFecha = t => new Date(t).toLocaleDateString('es', { day: 'numeric', month: 'short' });
+
             return (
               <>
                 <div className="rotulo" style={{ margin: '26px 0 10px' }}>Peso y talla</div>
                 <hr className="regla" style={{ marginBottom: 12 }} />
-                {conPeso.length > 0 && grafico(conPeso, 'peso_kg', 'Peso (kg)')}
-                {conTalla.length > 0 && grafico(conTalla, 'talla_cm', 'Talla (cm)')}
+                <svg viewBox={'0 0 ' + ANCHO + ' ' + ALTO} style={{ width: '100%', height: 'auto', display: 'block' }}>
+                  {sPeso.length > 1 && <polyline points={puntos(sPeso)} fill="none" stroke="var(--accent-600)" strokeWidth="1.5" opacity=".55" />}
+                  {sTalla.length > 1 && <polyline points={puntos(sTalla)} fill="none" stroke="var(--text)" strokeWidth="1.5" opacity=".4" />}
+                  {sPeso.map((p, i) => (
+                    <g key={'p' + i}>
+                      <circle cx={p.x} cy={p.y} r="3.6" fill="var(--accent-600)" />
+                      <text x={p.x} y={p.y - 8} textAnchor="middle" fontSize="8.5" fontWeight="800" fill="var(--accent-600)">{p.v}</text>
+                    </g>
+                  ))}
+                  {sTalla.map((p, i) => (
+                    <g key={'t' + i}>
+                      <circle cx={p.x} cy={p.y} r="3.6" fill="var(--text)" />
+                      <text x={p.x} y={p.y + 15} textAnchor="middle" fontSize="8.5" fontWeight="800" fill="var(--text)">{p.v}</text>
+                    </g>
+                  ))}
+                  <text x={IZQ} y={ALTO - 6} textAnchor="start" fontSize="8" fontWeight="500" fill="var(--n-600)">{fmtFecha(fMin)}</text>
+                  {fMax !== fMin && <text x={ANCHO - DER} y={ALTO - 6} textAnchor="end" fontSize="8" fontWeight="500" fill="var(--n-600)">{fmtFecha(fMax)}</text>}
+                </svg>
+                <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
+                  {sPeso.length > 0 && <span className="leyenda"><i style={{ background: 'var(--accent-600)' }} />Peso (kg)</span>}
+                  {sTalla.length > 0 && <span className="leyenda"><i style={{ background: 'var(--text)' }} />Talla (cm)</span>}
+                </div>
               </>
             );
           })()}
@@ -848,13 +917,7 @@ export default function App() {
           )}
 
           {/* Fusionado de la antigua pestaña "Hoy". */}
-          <div className="rotulo" style={{ margin: '30px 0 8px' }}>Hoy</div>
-          <hr className="regla" />
-          <div className="numeros" style={{ margin: '12px 0 20px', gridTemplateColumns: 'repeat(2, 1fr)' }}>
-            <div><b>{delDia.filter(r => r.tipo_evento === 'teta').length}</b><span>Tomas</span></div>
-            <div><b>{delDia.filter(r => ['pañal', 'pis', 'caca'].includes(r.tipo_evento)).length}</b><span>Pañales</span></div>
-          </div>
-          <div className="rotulo" style={{ marginBottom: 8 }}>Línea del día</div>
+          <div className="rotulo" style={{ margin: '30px 0 8px' }}>Línea del día</div>
           <hr className="regla" />
           {delDia.length > 0 && (
             <div style={{ fontSize: 10, color: 'var(--n-500)', padding: '8px 0 0' }}>Mantén pulsado para editar</div>
@@ -877,15 +940,17 @@ export default function App() {
       )}
 
       {vista === 'citas' && (
-        <PantallaCitas registros={registros} perfil={perfil} esquema={esquema} medicamentos={medicamentos}
+        <PantallaCitas registros={registros} historialVacuna={historialVacuna} perfil={perfil} esquema={esquema} medicamentos={medicamentos}
                        citas={citas} onGuardarCita={guardarCitaApp} onBorrarCita={borrarCitaApp}
                        onVerVacunas={() => setVista('vacunas')} />
       )}
 
       {vista === 'vacunas' && (
-        <PantallaVacunas registros={registros} perfil={perfil} esquema={esquema} onEsquemaChange={persistirEsquemaApp}
+        <PantallaVacunas registros={registros} historialVacuna={historialVacuna} perfil={perfil} esquema={esquema} onEsquemaChange={persistirEsquemaApp}
                          medicamentos={medicamentos} onGuardarMedicamento={guardarMedicamentoApp} onBorrarMedicamento={borrarMedicamentoApp}
                          tomasMed={tomasMed} onRegistrarToma={registrarToma}
+                         onEditarToma={editarUltimaTomaApp} onBorrarToma={borrarUltimaTomaApp}
+                         onEditarVacuna={editarVacunaApp} onBorrarVacuna={borrarVacunaApp}
                          citas={citas} onGuardarCita={guardarCitaApp} />
       )}
 
@@ -935,6 +1000,7 @@ export default function App() {
           hoja={hoja}
           esquema={esquema}
           registros={registros}
+          historialVacuna={historialVacuna}
           perfil={perfil}
           onCerrar={() => setHoja(null)}
           onGuardar={valores => {
@@ -1447,38 +1513,61 @@ function filaAToma(r, medsPorFila) {
 }
 
 // Une, para un mismo día del calendario, lo que hay que marcar: citas reales,
-// la fecha teórica de una dosis de vacuna vencida sin turno, y los días de
-// un tratamiento de medicación en curso. Un solo punto por día, con
-// prioridad cita > vacuna > medicación (lo más urgente/concreto primero).
-function marcaDia(dia, { citas, vacunas, medicamentos, nacimiento }) {
+// la fecha teórica de una dosis próxima o vencida sin turno, y los días de
+// un tratamiento de medicación en curso.
+// Devuelve un array de marcas para el día (puede haber más de una a la vez:
+// p. ej. un turno el mismo día que empieza una medicación), cada una con su
+// propio color Y forma — no sólo color — para que se entienda de un vistazo
+// qué hay ese día sin tener que tocar nada (ver .cal .pt en styles.css).
+// La alerta de "vacuna atrasada sin turno" se repite también en el día de
+// HOY (además de en la fecha en que se hizo exigible) para que no quede
+// enterrada en un mes que ya se pasó de largo.
+function marcaDia(dia, { citas, vacunas, medicamentos }) {
+  const marcas = [];
   const enElDia = iso => new Date(iso).toDateString() === dia.toDateString();
-  if (citas.some(c => enElDia(c.iso))) {
-    return citas.some(c => enElDia(c.iso) && c.vacuna) ? 'vac' : 'cita';
-  }
-  const nac = fechaLocal(nacimiento);
-  if ((vacunas || []).some(v => v.atrasadaSinTurno && enElDia(new Date(nac.getFullYear(), nac.getMonth() + v.mes, nac.getDate())))) {
-    return 'alerta';
-  }
+  const esHoy = dia.toDateString() === new Date().toDateString();
+  const citaDelDia = (citas || []).find(c => enElDia(c.iso));
+  // "vturno" (no "vac": ese nombre ya lo usa, sin relación, la fila de una
+  // dosis en la pantalla de Vacunas — evita que esas reglas de CSS choquen).
+  if (citaDelDia) marcas.push(citaDelDia.vacuna ? 'vturno' : 'cita');
+  (vacunas || []).forEach(v => {
+    if (v.atrasadaSinTurno && (esHoy || enElDia(v.fechaDue))) {
+      if (!marcas.includes('alerta')) marcas.push('alerta');
+    } else if (!v.puesta && !v.turnoAgendado && enElDia(v.fechaDue)) {
+      if (!marcas.includes('proxima')) marcas.push('proxima');
+    }
+  });
   if ((medicamentos || []).some(m => {
     const inicio = new Date(m.inicio), fin = new Date(inicio.getTime() + m.dias * 86400000);
     return dia >= new Date(inicio.toDateString()) && dia <= fin;
   })) {
-    return 'med';
+    marcas.push('med');
   }
-  return null;
+  return marcas;
 }
 
-function vacunasConEstado(esquema, registros, futuras, edadMeses) {
+// registros: idealmente el historial completo (no sólo la ventana corta de
+// action=inicial), para que una dosis aplicada hace tiempo no deje de
+// reconocerse. pasadas: turnos ya ocurridos — un turno de vacunación pasado
+// vinculado a esta dosis (vacunaId) cuenta como aplicada aunque no se haya
+// cargado además un registro de vacuna aparte, con la fecha del turno.
+// fechaDue queda calculada acá (nacimiento + mes del esquema) para que tanto
+// la pantalla de vacunas como el calendario usen siempre el mismo cálculo.
+function vacunasConEstado(esquema, registros, futuras, pasadas, edadMeses, nacimiento) {
+  const nac = fechaLocal(nacimiento);
   return (esquema || []).map(v => {
-    const puesta = (registros || []).find(r =>
-      r.tipo_evento === 'vacuna' && String(r.dosis || '').toLowerCase().includes(v.nombre.split(' ·')[0].toLowerCase()));
-    const turnoAgendado = futuras.some(c => c.vacunaId === v.id);
+    const base = v.nombre.split(' ·')[0].toLowerCase();
+    const registro = (registros || []).find(r => r.tipo_evento === 'vacuna' && String(r.dosis || '').toLowerCase().includes(base));
+    const turnoPasado = !registro && (pasadas || []).find(c => c.vacunaId === v.id);
+    const puesta = registro || (turnoPasado ? { iso: turnoPasado.iso, timestamp: turnoPasado.iso } : null);
+    const turnoAgendado = (futuras || []).some(c => c.vacunaId === v.id);
+    const fechaDue = new Date(nac.getFullYear(), nac.getMonth() + v.mes, nac.getDate());
     const atrasadaSinTurno = !puesta && !turnoAgendado && edadMeses >= v.mes;
-    return { ...v, edad: edadDosis(v.mes), puesta, turnoAgendado, atrasadaSinTurno };
+    return { ...v, edad: edadDosis(v.mes), fechaDue, puesta, turnoAgendado, atrasadaSinTurno };
   });
 }
 
-function PantallaCitas({ registros, perfil, esquema, medicamentos, citas, onGuardarCita, onBorrarCita, onVerVacunas }) {
+function PantallaCitas({ registros, historialVacuna, perfil, esquema, medicamentos, citas, onGuardarCita, onBorrarCita, onVerVacunas }) {
   const [mes, setMes] = useState(() => { const d = new Date(); return { a: d.getFullYear(), m: d.getMonth() }; });
   const [sel, setSel] = useState(null);
   const [hoja, setHoja] = useState(null); // 'nueva' | cita | {prefillVacuna}
@@ -1494,7 +1583,18 @@ function PantallaCitas({ registros, perfil, esquema, medicamentos, citas, onGuar
 
   const nacimiento = perfil?.nacimiento || NACIMIENTO;
   const edadMeses = mesesDeVida(nacimiento);
-  const vacunas = vacunasConEstado(esquema, registros, futuras, edadMeses);
+  // Historial completo de vacunas (no sólo la ventana corta de "registros"),
+  // para que una dosis aplicada hace más de unos días no deje de detectarse.
+  const historialVacunaCompleto = useMemo(() => {
+    const vistas = new Set();
+    return [...registros.filter(r => r.tipo_evento === 'vacuna'), ...(historialVacuna || [])].filter(r => {
+      const clave = r.fila != null ? 'f' + r.fila : 'l' + (r.id_local || r.id);
+      if (vistas.has(clave)) return false;
+      vistas.add(clave);
+      return true;
+    });
+  }, [registros, historialVacuna]);
+  const vacunas = vacunasConEstado(esquema, historialVacunaCompleto, futuras, pasadas, edadMeses, nacimiento);
   const aplicadas = vacunas.filter(v => v.puesta).length;
   const proximaVacuna = vacunas.find(v => !v.puesta);
 
@@ -1541,17 +1641,18 @@ function PantallaCitas({ registros, perfil, esquema, medicamentos, citas, onGuar
           {Array.from({ length: huecos }).map((_, i) => <button key={'h' + i} className="off" disabled />)}
           {Array.from({ length: largo }).map((_, i) => {
             const n = i + 1;
-            const marca = marcaDia(new Date(mes.a, mes.m, n), { citas, vacunas, medicamentos, nacimiento });
+            const marcas = marcaDia(new Date(mes.a, mes.m, n), { citas, vacunas, medicamentos });
             return (
               <button key={n} className={sel === n ? 'sel' : ''} onClick={() => setSel(sel === n ? null : n)}>
-                {n}<span className={'pt' + (marca ? ' ' + marca : '')} />
+                {n}<span className="pts">{marcas.map(m => <span key={m} className={'pt ' + m} />)}</span>
               </button>
             );
           })}
         </div>
         <div style={{ display: 'flex', gap: 16, marginTop: 10, flexWrap: 'wrap' }}>
           <span className="leyenda"><i className="cita" />Turno</span>
-          <span className="leyenda"><i className="vac" />Vacuna agendada</span>
+          <span className="leyenda"><i className="vturno" />Vacuna agendada</span>
+          <span className="leyenda"><i className="proxima" />Vacuna próxima</span>
           <span className="leyenda"><i className="alerta" />Vacuna sin turno</span>
           <span className="leyenda"><i className="med" />Medicación</span>
         </div>
@@ -1749,15 +1850,32 @@ function agruparVacunas(vacunas) {
   return grupos;
 }
 
-function PantallaVacunas({ registros, perfil, esquema, onEsquemaChange, medicamentos, onGuardarMedicamento, onBorrarMedicamento, tomasMed, onRegistrarToma, citas, onGuardarCita }) {
+function PantallaVacunas({ registros, historialVacuna, perfil, esquema, onEsquemaChange, medicamentos, onGuardarMedicamento, onBorrarMedicamento, tomasMed, onRegistrarToma, onEditarToma, onBorrarToma, onEditarVacuna, onBorrarVacuna, citas, onGuardarCita }) {
   const [mes, setMes] = useState(() => { const d = new Date(); return { a: d.getFullYear(), m: d.getMonth() }; });
   const [sel, setSel] = useState(null);
-  const [hoja, setHoja] = useState(null); // 'esquema' | 'medNueva' | medicamento | {prefillVacuna}
+  const [hoja, setHoja] = useState(null); // 'esquema' | 'medNueva' | medicamento | {prefillVacuna} | {editarToma} | {editarVacuna}
 
   const nacimiento = perfil?.nacimiento || NACIMIENTO;
   const edadMeses = mesesDeVida(nacimiento);
-  const futuras = citas.filter(c => !isNaN(new Date(c.iso).getTime()) && new Date(c.iso) >= new Date(Date.now() - 6 * 3600000));
-  const vacunas = vacunasConEstado(esquema, registros, futuras, edadMeses);
+  const corte = new Date(Date.now() - 6 * 3600000);
+  const conFecha = citas.filter(c => !isNaN(new Date(c.iso).getTime()));
+  const futuras = conFecha.filter(c => new Date(c.iso) >= corte);
+  // Más reciente primero (igual que en PantallaCitas), para que si hay más
+  // de un turno pasado vinculado a la misma dosis, vacunasConEstado() tome
+  // el más reciente como fecha de aplicación.
+  const pasadas = conFecha.filter(c => new Date(c.iso) < corte).slice().reverse();
+  // Historial completo de vacunas (no sólo la ventana corta de "registros"),
+  // para que una dosis aplicada hace más de unos días no deje de detectarse.
+  const historialVacunaCompleto = useMemo(() => {
+    const vistas = new Set();
+    return [...registros.filter(r => r.tipo_evento === 'vacuna'), ...(historialVacuna || [])].filter(r => {
+      const clave = r.fila != null ? 'f' + r.fila : 'l' + (r.id_local || r.id);
+      if (vistas.has(clave)) return false;
+      vistas.add(clave);
+      return true;
+    });
+  }, [registros, historialVacuna]);
+  const vacunas = vacunasConEstado(esquema, historialVacunaCompleto, futuras, pasadas, edadMeses, nacimiento);
   const aplicadas = vacunas.filter(v => v.puesta).length;
   const grupos = agruparVacunas(vacunas);
 
@@ -1781,17 +1899,18 @@ function PantallaVacunas({ registros, perfil, esquema, onEsquemaChange, medicame
         {Array.from({ length: huecos }).map((_, i) => <button key={'h' + i} className="off" disabled />)}
         {Array.from({ length: largo }).map((_, i) => {
           const n = i + 1;
-          const marca = marcaDia(new Date(mes.a, mes.m, n), { citas, vacunas, medicamentos, nacimiento });
+          const marcas = marcaDia(new Date(mes.a, mes.m, n), { citas, vacunas, medicamentos });
           return (
             <button key={n} className={sel === n ? 'sel' : ''} onClick={() => setSel(sel === n ? null : n)}>
-              {n}<span className={'pt' + (marca ? ' ' + marca : '')} />
+              {n}<span className="pts">{marcas.map(m => <span key={m} className={'pt ' + m} />)}</span>
             </button>
           );
         })}
       </div>
       <div style={{ display: 'flex', gap: 16, marginTop: 10, flexWrap: 'wrap' }}>
         <span className="leyenda"><i className="cita" />Cita</span>
-        <span className="leyenda"><i className="vac" />Vacuna agendada</span>
+        <span className="leyenda"><i className="vturno" />Vacuna agendada</span>
+        <span className="leyenda"><i className="proxima" />Vacuna próxima</span>
         <span className="leyenda"><i className="alerta" />Vacuna sin turno</span>
         <span className="leyenda"><i className="med" />Medicación</span>
       </div>
@@ -1819,28 +1938,28 @@ function PantallaVacunas({ registros, perfil, esquema, onEsquemaChange, medicame
             )}
           </div>
           {g.dosis.map(v => (
-            v.atrasadaSinTurno ? (
-              <button key={v.id} className="vac" style={{ width: '100%', border: 0, background: 'none', textAlign: 'left' }}
-                      onClick={() => setHoja({ prefillVacuna: v })}>
-                <Icono tipo="vacuna" s={20} />
-                <span>
-                  <span style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>{g.dosis.length > 1 ? v.nombre.split(' · ').pop() : v.edad}</span>
-                  <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--n-600)', marginTop: 4 }}>{v.edad} · sin turno agendado</span>
-                </span>
-                <span className="p urgente">Agendar</span>
-              </button>
-            ) : (
-              <div key={v.id} className={'vac' + (v.puesta ? ' hecha' : '')}>
-                <Icono tipo="vacuna" s={20} />
-                <span>
-                  <span style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>{g.dosis.length > 1 ? v.nombre.split(' · ').pop() : v.edad}</span>
-                  {g.dosis.length > 1 && <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--n-600)', marginTop: 4 }}>{v.edad}</span>}
-                </span>
-                {v.puesta
-                  ? <span className="d">{new Date(v.puesta.iso || v.puesta.timestamp).toLocaleDateString('es', { day: 'numeric', month: 'short' })}</span>
-                  : <span className="p">Pendiente</span>}
-              </div>
-            )
+            <div key={v.id} className={'vac' + (v.puesta ? ' hecha' : '')}>
+              <Icono tipo="vacuna" s={20} />
+              <span>
+                <span style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>{g.dosis.length > 1 ? v.nombre.split(' · ').pop() : v.edad}</span>
+                {(g.dosis.length > 1 || v.atrasadaSinTurno) && (
+                  <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--n-600)', marginTop: 4 }}>
+                    {[g.dosis.length > 1 ? v.edad : null, v.atrasadaSinTurno ? 'sin turno agendado' : null].filter(Boolean).join(' · ')}
+                  </span>
+                )}
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {v.atrasadaSinTurno
+                  ? <button className="p urgente" onClick={() => setHoja({ prefillVacuna: v })} aria-label={'Agendar turno de ' + v.nombre}>Agendar</button>
+                  : v.puesta
+                    ? <span className="d">{new Date(v.puesta.iso || v.puesta.timestamp).toLocaleDateString('es', { day: 'numeric', month: 'short' })}</span>
+                    : <span className="p">Pendiente</span>}
+                <button onClick={() => setHoja({ editarVacuna: v })} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 2 }}
+                        aria-label={'Editar fecha de aplicación · ' + v.nombre}>
+                  <Icono tipo="editar" s={14} />
+                </button>
+              </span>
+            </div>
           ))}
         </div>
       ))}
@@ -1853,15 +1972,20 @@ function PantallaVacunas({ registros, perfil, esquema, onEsquemaChange, medicame
       {medicamentos.map(m => {
         const fin = new Date(new Date(m.inicio).getTime() + m.dias * 86400000);
         const vigente = Date.now() <= fin.getTime();
-        const tomasDelMed = tomasMed.filter(t => t.medId === m.id).length;
+        const tomasDelMed = tomasMed.filter(t => t.medId === m.id).sort((a, b) => b.iso.localeCompare(a.iso));
+        const ultimaToma = tomasDelMed[0] ? new Date(tomasDelMed[0].iso) : null;
         return (
           <div key={m.id} className="med-item">
             <Icono tipo="medicamento" s={20} />
             <span style={{ flex: 1 }}>
               <span style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>{m.nombre}</span>
               <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--n-600)', marginTop: 4 }}>
-                Cada {m.frecuenciaHoras} h · {m.dias} días · {tomasDelMed} {tomasDelMed === 1 ? 'toma' : 'tomas'}{!vigente ? ' · terminado' : ''}
+                Cada {m.frecuenciaHoras} h · {m.dias} días · {tomasDelMed.length} {tomasDelMed.length === 1 ? 'toma' : 'tomas'}{!vigente ? ' · terminado' : ''}
               </span>
+              <button onClick={() => setHoja({ editarToma: m })}
+                      style={{ display: 'block', border: 0, background: 'none', padding: 0, marginTop: 5, color: 'var(--accent-600)', fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em' }}>
+                {ultimaToma ? 'Última toma: hace ' + hace(ultimaToma) : 'Sin tomas · cargar a mano'}
+              </button>
             </span>
             {vigente && (
               <button className="btn btn-secundario" style={{ width: 'auto', padding: '8px 12px', fontSize: 10.5 }}
@@ -1898,6 +2022,31 @@ function PantallaVacunas({ registros, perfil, esquema, onEsquemaChange, medicame
           onCerrar={() => setHoja(null)}
           onGuardar={c => { onGuardarCita(c, true); setHoja(null); }}
           onBorrar={() => setHoja(null)}
+        />
+      )}
+      {hoja && hoja.editarToma && (
+        <EditarInicioSheet
+          kicker="Medicación"
+          titulo={'Última toma · ' + hoja.editarToma.nombre}
+          etiqueta="Se tomó a las"
+          valorInicial={(() => {
+            const t = tomasMed.filter(x => x.medId === hoja.editarToma.id).sort((a, b) => b.iso.localeCompare(a.iso))[0];
+            return aLocal(t ? new Date(t.iso) : new Date());
+          })()}
+          onBorrar={tomasMed.some(t => t.medId === hoja.editarToma.id) ? () => { onBorrarToma(hoja.editarToma.id); setHoja(null); } : undefined}
+          onCerrar={() => setHoja(null)}
+          onGuardar={valor => { onEditarToma(hoja.editarToma.id, deLocalISO(valor)); setHoja(null); }}
+        />
+      )}
+      {hoja && hoja.editarVacuna && (
+        <EditarInicioSheet
+          kicker="Vacunas"
+          titulo={hoja.editarVacuna.nombre}
+          etiqueta="Se aplicó el"
+          valorInicial={aLocal(hoja.editarVacuna.puesta ? new Date(hoja.editarVacuna.puesta.iso || hoja.editarVacuna.puesta.timestamp) : new Date())}
+          onBorrar={hoja.editarVacuna.puesta && filaReal(hoja.editarVacuna.puesta.fila) ? () => { onBorrarVacuna(hoja.editarVacuna); setHoja(null); } : undefined}
+          onCerrar={() => setHoja(null)}
+          onGuardar={valor => { onEditarVacuna(hoja.editarVacuna, deLocalISO(valor)); setHoja(null); }}
         />
       )}
     </section>
@@ -2017,17 +2166,20 @@ function HojaEsquema({ esquema, onGuardar, onCerrar }) {
   );
 }
 
-function EditarInicioSheet({ valorInicial, onCerrar, onGuardar }) {
+// Hoja genérica para editar UN valor de fecha/hora a mano (se reutiliza para
+// la hora de inicio del cronómetro en curso, la última toma de un
+// medicamento y la fecha de aplicación de una dosis de vacuna).
+function EditarInicioSheet({ valorInicial, onCerrar, onGuardar, onBorrar, kicker = 'Editar en curso', titulo = 'Hora de inicio', etiqueta = 'Empezó a las' }) {
   const [valor, setValor] = useState(valorInicial);
   const ahoraLocal = aLocal(new Date());
   return (
     <>
       <div className="fondo" onClick={onCerrar} />
-      <div className="hoja" role="dialog" aria-label="Editar hora de inicio">
+      <div className="hoja" role="dialog" aria-label={titulo}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
           <div>
-            <div className="kicker">Editar en curso</div>
-            <h2>Hora de inicio</h2>
+            <div className="kicker">{kicker}</div>
+            <h2 style={{ textTransform: 'none' }}>{titulo}</h2>
           </div>
           <button onClick={onCerrar} style={{ border: 0, background: 'none', color: 'var(--n-600)', padding: 4 }} aria-label="Cerrar">
             <Icono tipo="cerrar" s={22} />
@@ -2035,11 +2187,11 @@ function EditarInicioSheet({ valorInicial, onCerrar, onGuardar }) {
         </div>
         <hr className="regla" style={{ margin: '16px 0 0' }} />
         <div className="campo" style={{ borderBottom: 0 }}>
-          <span className="rotulo">Empezó a las</span>
+          <span className="rotulo">{etiqueta}</span>
           <input className="entrada-texto" type="datetime-local" max={ahoraLocal} value={valor} onChange={e => setValor(e.target.value)} />
         </div>
         <div className="acciones">
-          <button onClick={onCerrar}>Cancelar</button>
+          <button onClick={onBorrar || onCerrar}>{onBorrar ? 'Borrar' : 'Cancelar'}</button>
           <button className="guardar" onClick={() => onGuardar(valor > ahoraLocal ? ahoraLocal : valor)}>Guardar</button>
         </div>
       </div>
@@ -2047,7 +2199,7 @@ function EditarInicioSheet({ valorInicial, onCerrar, onGuardar }) {
   );
 }
 
-function HojaDetalle({ hoja, esquema, registros, perfil, onCerrar, onGuardar, onBorrar, onReanudar }) {
+function HojaDetalle({ hoja, esquema, registros, historialVacuna, perfil, onCerrar, onGuardar, onBorrar, onReanudar }) {
   const campos = DETALLE[hoja.tipo] || [];
   const esCrono = hoja.tipo === 'teta' || hoja.tipo === 'sueño';
   const conHora = hoja.modo === 'editar' || esCrono;
@@ -2076,11 +2228,15 @@ function HojaDetalle({ hoja, esquema, registros, perfil, onCerrar, onGuardar, on
   // esté cargado, en vez de tener que escribirlo a mano.
   const opcionesVacuna = useMemo(() => {
     if (hoja.tipo !== 'vacuna') return [];
-    const edadMeses = mesesDeVida(perfil?.nacimiento || NACIMIENTO);
-    return vacunasConEstado(esquema || [], registros || [], [], edadMeses)
+    const nacimiento = perfil?.nacimiento || NACIMIENTO;
+    const edadMeses = mesesDeVida(nacimiento);
+    // Se usa el historial completo (no sólo la ventana corta de "registros")
+    // para no ofrecer como "pendiente" una dosis que ya se cargó hace tiempo.
+    const registrosVacuna = [...(registros || []).filter(r => r.tipo_evento === 'vacuna'), ...(historialVacuna || [])];
+    return vacunasConEstado(esquema || [], registrosVacuna, [], [], edadMeses, nacimiento)
       .filter(v => !v.puesta)
       .map(v => v.nombre);
-  }, [hoja.tipo, esquema, registros, perfil]);
+  }, [hoja.tipo, esquema, registros, historialVacuna, perfil]);
 
   return (
     <>
