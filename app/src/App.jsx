@@ -214,7 +214,7 @@ export default function App() {
   // exactamente lo que va a quedar guardado.
   function persistirEsquemaApp(lista) {
     setEsquemaState(lista);
-    llamar({ accion: 'esquema_guardar', esquema: lista }).then(res => { if (res.offline) setPendientes(leerCola().length); });
+    enviar({ accion: 'esquema_guardar', esquema: lista });
   }
 
   // Turnos y medicación ahora son filas de la planilla: además del estado
@@ -232,25 +232,25 @@ export default function App() {
       cita_vacuna: c.vacuna ? 1 : '', cita_vacuna_id: c.vacunaId || '',
     };
     const llamada = esNueva
-      ? llamar({ tipo_evento: 'cita', id_local: c.id, timestamp: c.iso, ...campos })
-      : llamar({ accion: 'corregir', fila: c.fila, timestamp: c.iso, ...campos });
-    llamada.then(res => { if (res.offline) setPendientes(leerCola().length); cargarExtra(); });
+      ? enviar({ tipo_evento: 'cita', id_local: c.id, timestamp: c.iso, ...campos })
+      : enviar({ accion: 'corregir', fila: c.fila, timestamp: c.iso, ...campos });
+    llamada.then(() => cargarExtra());
   }
   function borrarCitaApp(c) {
     setCitasState(prev => prev.filter(x => x.id !== c.id));
-    if (c.fila) llamar({ accion: 'eliminar', fila: c.fila }).then(() => cargarExtra());
+    if (c.fila) enviar({ accion: 'eliminar', fila: c.fila }).then(() => cargarExtra());
   }
   function guardarMedicamentoApp(m, esNueva) {
     setMedicamentosState(prev => esNueva ? [...prev, m] : prev.map(x => x.id === m.id ? m : x));
     const campos = { med_nombre: m.nombre, med_dias: m.dias, med_frecuencia_horas: m.frecuenciaHoras };
     const llamada = esNueva
-      ? llamar({ tipo_evento: 'medicamento', id_local: m.id, timestamp: m.inicio, ...campos })
-      : llamar({ accion: 'corregir', fila: m.fila, timestamp: m.inicio, ...campos });
-    llamada.then(res => { if (res.offline) setPendientes(leerCola().length); cargarExtra(); });
+      ? enviar({ tipo_evento: 'medicamento', id_local: m.id, timestamp: m.inicio, ...campos })
+      : enviar({ accion: 'corregir', fila: m.fila, timestamp: m.inicio, ...campos });
+    llamada.then(() => cargarExtra());
   }
   function borrarMedicamentoApp(m) {
     setMedicamentosState(prev => prev.filter(x => x.id !== m.id));
-    if (m.fila) llamar({ accion: 'eliminar', fila: m.fila }).then(() => cargarExtra());
+    if (m.fila) enviar({ accion: 'eliminar', fila: m.fila }).then(() => cargarExtra());
   }
   function registrarToma(medId) {
     const med = medicamentos.find(m => m.id === medId);
@@ -262,7 +262,7 @@ export default function App() {
     // sincronizar) esta toma queda sólo optimista hasta el próximo
     // cargarExtra(): caso borde raro, no vale la pena bloquear el botón por esto.
     if (med && med.fila) {
-      llamar({ tipo_evento: 'toma_medicacion', id_local: nueva.id, timestamp: nueva.iso, med_fila: med.fila })
+      enviar({ tipo_evento: 'toma_medicacion', id_local: nueva.id, timestamp: nueva.iso, med_fila: med.fila })
         .then(() => cargarExtra());
     }
   }
@@ -274,12 +274,12 @@ export default function App() {
     const ultima = tomasMed.filter(t => t.medId === medId).sort((a, b) => b.iso.localeCompare(a.iso))[0];
     if (ultima && ultima.fila) {
       setTomasMedState(lista => lista.map(t => t.id === ultima.id ? { ...t, iso } : t));
-      llamar({ accion: 'corregir', fila: ultima.fila, timestamp: iso }).then(() => cargarExtra());
+      enviar({ accion: 'corregir', fila: ultima.fila, timestamp: iso }).then(() => cargarExtra());
     } else {
       const nueva = { id: 'tm' + Date.now(), medId, iso };
       setTomasMedState(lista => [nueva, ...lista]);
       if (med && med.fila) {
-        llamar({ tipo_evento: 'toma_medicacion', id_local: nueva.id, timestamp: iso, med_fila: med.fila }).then(() => cargarExtra());
+        enviar({ tipo_evento: 'toma_medicacion', id_local: nueva.id, timestamp: iso, med_fila: med.fila }).then(() => cargarExtra());
       }
     }
     avisadosMedRef.current.delete(medId);
@@ -289,7 +289,7 @@ export default function App() {
     const ultima = tomasMed.filter(t => t.medId === medId).sort((a, b) => b.iso.localeCompare(a.iso))[0];
     if (!ultima) return;
     setTomasMedState(lista => lista.filter(t => t.id !== ultima.id));
-    if (ultima.fila) llamar({ accion: 'eliminar', fila: ultima.fila }).then(() => cargarExtra());
+    if (ultima.fila) enviar({ accion: 'eliminar', fila: ultima.fila }).then(() => cargarExtra());
   }
   // Igual que arriba pero para una dosis del esquema de vacunas: corrige el
   // registro ya matcheado (v.puesta) si existe, o crea uno nuevo con la
@@ -299,9 +299,9 @@ export default function App() {
     if (v.puesta && filaReal(v.puesta.fila)) {
       setHistorialVacuna(lista => lista.map(r => r.fila === v.puesta.fila ? { ...r, iso, timestamp: iso } : r));
       setRegistros(lista => lista.map(r => r.fila === v.puesta.fila ? { ...r, iso, timestamp: iso } : r));
-      llamar({ accion: 'corregir', fila: v.puesta.fila, timestamp: iso }).then(() => cargarExtra());
+      enviar({ accion: 'corregir', fila: v.puesta.fila, timestamp: iso }).then(() => cargarExtra());
     } else {
-      llamar({ tipo_evento: 'vacuna', id_local: 'r' + Date.now(), timestamp: iso, dosis: v.nombre }).then(() => cargarExtra());
+      enviar({ tipo_evento: 'vacuna', id_local: 'r' + Date.now(), timestamp: iso, dosis: v.nombre }).then(() => cargarExtra());
     }
   }
   function borrarVacunaApp(v) {
@@ -309,7 +309,7 @@ export default function App() {
     const fila = v.puesta.fila;
     setHistorialVacuna(lista => lista.filter(r => r.fila !== fila));
     setRegistros(lista => lista.filter(r => r.fila !== fila));
-    llamar({ accion: 'eliminar', fila }).then(() => cargarExtra());
+    enviar({ accion: 'eliminar', fila }).then(() => cargarExtra());
   }
   function proximaDosisMed(med) {
     const tomasDelMed = tomasMed.filter(t => t.medId === med.id).sort((a, b) => b.iso.localeCompare(a.iso));
@@ -532,6 +532,19 @@ export default function App() {
     notificar.t = setTimeout(() => setAviso(null), 3600);
   }
 
+  // Wrapper de llamar(): antes, un {ok:false} real del servidor (una
+  // excepción del lado de Apps Script, no un problema de conexión) se
+  // ignoraba en todos lados — la app seguía como si se hubiera guardado.
+  // Cada punto de escritura pasa ahora por acá para que un error real se
+  // avise siempre, y "offline" siga prendiendo el contador de pendientes.
+  function enviar(body) {
+    return llamar(body).then(res => {
+      if (res.offline) setPendientes(leerCola().length);
+      else if (!res.ok) notificar(res.mensaje || 'No se pudo guardar. Probá de nuevo.');
+      return res;
+    });
+  }
+
   function registrar(tipo, extra = {}) {
     const optimista = {
       fila: 'tmp-' + Date.now(), tipo_evento: tipo,
@@ -539,13 +552,10 @@ export default function App() {
       ...(extra.timestamp ? { iso: extra.timestamp } : {}),
     };
     setRegistros(r => [optimista, ...r]);
-    llamar({ tipo_evento: tipo, ...extra }).then(res => {
-      if (res.offline) setPendientes(leerCola().length);
-      refrescar();
-    });
+    enviar({ tipo_evento: tipo, ...extra }).then(() => refrescar());
     notificar(tipo[0].toUpperCase() + tipo.slice(1) + ' registrado · ' + reloj(new Date()), () => {
       setRegistros(r => r.filter(x => x.fila !== optimista.fila));
-      llamar({ accion: 'eliminar_ultimo', tipo_evento: tipo }).then(refrescar);
+      enviar({ accion: 'eliminar_ultimo', tipo_evento: tipo }).then(refrescar);
     });
   }
 
@@ -553,13 +563,12 @@ export default function App() {
     if (estado && estado.tipo_evento === tipo) {
       const min = Math.max(1, Math.round((ahora - new Date(estado.inicio)) / 60000));
       setEstado(null);
-      llamar({ accion: 'detener' }).then(refrescar);
+      enviar({ accion: 'detener' }).then(refrescar);
       notificar(tipo + ' · ' + min + ' min guardados' + (estado.reanudar_fila ? ' (retomado)' : ''));
     } else if (!estado) {
       setEstado({ tipo_evento: tipo, inicio: new Date().toISOString(), activo: true });
-      llamar({ accion: 'iniciar', tipo_evento: tipo }).then(res => {
+      enviar({ accion: 'iniciar', tipo_evento: tipo }).then(res => {
         if (res.estado) setEstado(res.estado);
-        if (res.offline) setPendientes(leerCola().length);
       });
     }
   }
@@ -570,9 +579,8 @@ export default function App() {
   function reanudar(tipo, fila) {
     if (estado) return;
     setEstado({ tipo_evento: tipo, inicio: new Date().toISOString(), activo: true, reanudar_fila: fila });
-    llamar({ accion: 'reanudar', tipo_evento: tipo, fila }).then(res => {
+    enviar({ accion: 'reanudar', tipo_evento: tipo, fila }).then(res => {
       if (res.estado) setEstado(res.estado);
-      if (res.offline) setPendientes(leerCola().length);
     });
     setHoja(null);
     notificar('Retomando ' + tipo);
@@ -963,15 +971,15 @@ export default function App() {
           onReintentar={cargarEstudios}
           onSubido={() => { setEstudios(null); setCategoriasEstudio(null); cargarEstudios(); }}
           onBorrar={fila => {
-            llamar({ accion: 'eliminar', fila }).then(() => { setEstudios(null); cargarEstudios(); });
+            enviar({ accion: 'eliminar', fila }).then(() => { setEstudios(null); cargarEstudios(); });
           }}
           onMover={(fila, cat) => {
             setEstudios(es => es && es.map(r => r.fila === fila ? { ...r, archivo_categoria: cat } : r));
-            llamar({ accion: 'corregir', fila, archivo_categoria: cat });
+            enviar({ accion: 'corregir', fila, archivo_categoria: cat });
           }}
           onCategorias={lista => {
             setCategoriasEstudio(lista);
-            llamar({ accion: 'categorias_guardar', categorias: lista });
+            enviar({ accion: 'categorias_guardar', categorias: lista });
           }}
         />
       )}
@@ -1005,11 +1013,11 @@ export default function App() {
           onCerrar={() => setHoja(null)}
           onGuardar={valores => {
             if (hoja.modo === 'nuevo') registrar(hoja.tipo, valores);
-            else llamar({ accion: 'corregir', fila: hoja.fila, ...valores }).then(refrescar);
+            else enviar({ accion: 'corregir', fila: hoja.fila, ...valores }).then(refrescar);
             setHoja(null);
           }}
           onBorrar={() => {
-            llamar({ accion: 'eliminar', fila: hoja.fila }).then(refrescar);
+            enviar({ accion: 'eliminar', fila: hoja.fila }).then(refrescar);
             setRegistros(r => r.filter(x => x.fila !== hoja.fila));
             setHoja(null);
             notificar('Registro eliminado');
@@ -1031,7 +1039,7 @@ export default function App() {
           onGuardar={valor => {
             const iso = deLocalISO(valor);
             setEstado(e => (e ? { ...e, inicio: iso } : e));
-            llamar({ accion: 'ajustar_inicio', inicio: iso }).then(refrescar);
+            enviar({ accion: 'ajustar_inicio', inicio: iso }).then(refrescar);
             setEditarInicio(false);
           }}
         />
@@ -1073,7 +1081,7 @@ export default function App() {
                      onChange={e => setPerfil(p => ({ ...p, nacimiento: e.target.value }))} />
             </div>
             <button className="btn btn-primario" style={{ marginTop: 4 }}
-                    onClick={() => llamar({ accion: 'perfil', ...perfil }).then(() => notificar('Datos guardados'))}>
+                    onClick={() => enviar({ accion: 'perfil', ...perfil }).then(res => { if (res.ok) notificar('Datos guardados'); })}>
               Guardar datos
             </button>
 
