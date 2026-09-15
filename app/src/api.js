@@ -59,7 +59,12 @@ export function vaciarCola(alTerminar) {
   const cola = leerCola();
   if (!cola.length) return Promise.resolve(0);
   return conTimeout(URL_APP, { method: 'POST', body: JSON.stringify(cola[0]) })
-    .then(() => {
+    .then(res => {
+      // Un error real del servidor (ok:false, no un problema de red) no es
+      // motivo para sacarlo de la cola como si se hubiera entregado: se
+      // pierde para siempre y nadie se entera. Se lo deja en la cola —
+      // sigue viéndose en "N pendientes" — y se reintenta en el próximo ciclo.
+      if (!res.ok) return cola.length;
       const resto = leerCola().slice(1);
       guardarCola(resto);
       if (alTerminar) alTerminar(resto.length);

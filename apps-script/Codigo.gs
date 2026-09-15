@@ -75,6 +75,13 @@ function leerRegistros_(limite) {
     r.iso = r.timestamp instanceof Date ? r.timestamp.toISOString() : String(r.timestamp);
     out.push(r);
   }
+  // El orden de aparición en la hoja (appendRow) no siempre coincide con el
+  // orden real de los hechos: una fecha cargada o corregida a mano puede
+  // quedar en una fila más nueva con un timestamp más viejo (o viceversa).
+  // Se ordena acá, una sola vez, para que todo lo que consume esto (el
+  // cliente, y las cuentas de "semana" más abajo) pueda confiar en que el
+  // primer elemento es siempre el evento más reciente de verdad.
+  out.sort(function (a, b) { return new Date(b.iso) - new Date(a.iso); });
   return out;
 }
 
@@ -151,8 +158,14 @@ function escribir_(datos) {
 
 function doPost(e) {
   var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
   try {
+    // Si dos escrituras chocan (dos teléfonos a la vez, o el reintento
+    // automático de la cola pisando una acción manual) y no se consigue el
+    // lock a tiempo, waitLock tira una excepción: tiene que quedar dentro
+    // del try para que el cliente reciba un JSON {ok:false} en vez de una
+    // página de error que igual va a terminar reintentándose como si fuera
+    // un problema de conexión.
+    lock.waitLock(20000);
     var b = JSON.parse(e.postData.contents);
 
     if (b.accion === 'iniciar') {
