@@ -156,6 +156,23 @@ function escribir_(datos) {
   return sh.getLastRow();
 }
 
+// Si el cliente ya mandó antes una fila con este mismo id_local (típico:
+// el POST anterior sí llegó a guardar, pero la respuesta se perdió por un
+// timeout o un corte de red, y el cliente lo reintenta desde la cola
+// offline pensando que nunca se envió) devuelve esa fila en vez de nada,
+// para no crear un duplicado. null si no hay ninguna fila con ese id_local.
+function buscarPorIdLocal_(idLocal) {
+  var h = hoja_(), sh = h.sh, cols = h.cols;
+  var col = indice_(cols, 'id_local');
+  var ultima = sh.getLastRow();
+  if (!col || ultima < 2) return null;
+  var valores = sh.getRange(2, col, ultima - 1, 1).getValues();
+  for (var i = 0; i < valores.length; i++) {
+    if (valores[i][0] === idLocal) return 2 + i;
+  }
+  return null;
+}
+
 function doPost(e) {
   var lock = LockService.getScriptLock();
   try {
@@ -355,7 +372,14 @@ function doPost(e) {
       return json_({ ok: true, mensaje: 'Archivo subido', url: archivo.getUrl() });
     }
 
-    // registro rápido: cualquier tipo_evento con sus campos opcionales
+    // registro rápido: cualquier tipo_evento con sus campos opcionales.
+    // Por acá pasan también citas/medicamentos/tomas/vacunas nuevas, que ya
+    // mandan id_local — de ahí que el chequeo de duplicado quede acá y no
+    // repetido en cada tipo.
+    if (b.id_local) {
+      var filaExistente = buscarPorIdLocal_(b.id_local);
+      if (filaExistente) return json_({ ok: true, mensaje: b.tipo_evento + ' ya estaba registrado', fila: filaExistente });
+    }
     var datos2 = {};
     COLUMNAS.forEach(function (c) { if (b[c] !== undefined) datos2[c] = b[c]; });
     datos2.tipo_evento = b.tipo_evento;

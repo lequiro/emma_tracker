@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { consultar, llamar, leerCola, vaciarCola, subirArchivo, fusionarLocales } from './api.js';
+import { consultar, llamar, leerCola, vaciarCola, descartarCola, subirArchivo, fusionarLocales } from './api.js';
 import { Icono, Marca } from './icons.jsx';
 
 const NACIMIENTO = '2026-04-19';          // ajustar en Ajustes → perfil
@@ -552,7 +552,11 @@ export default function App() {
       ...(extra.timestamp ? { iso: extra.timestamp } : {}),
     };
     setRegistros(r => [optimista, ...r]);
-    enviar({ tipo_evento: tipo, ...extra }).then(() => refrescar());
+    // id_local propio (no el 'tmp-' de arriba, que es sólo para matchear la
+    // fila optimista en la UI): si este POST tarda y la app lo reintenta
+    // desde la cola offline pensando que nunca salió, el servidor lo
+    // reconoce como el mismo envío y no lo duplica.
+    enviar({ tipo_evento: tipo, ...extra, id_local: 'r' + Date.now() }).then(() => refrescar());
     notificar(tipo[0].toUpperCase() + tipo.slice(1) + ' registrado · ' + reloj(new Date()), () => {
       setRegistros(r => r.filter(x => x.fila !== optimista.fila));
       enviar({ accion: 'eliminar_ultimo', tipo_evento: tipo }).then(refrescar);
@@ -1090,12 +1094,38 @@ export default function App() {
             <div style={{ padding: '12px 0', borderBottom: '1px solid var(--n-300)', fontSize: 13.5 }}>
               Hoja de cálculo conectada · {pendientes ? pendientes + ' pendientes' : 'todo sincronizado'}
             </div>
+            {pendientes > 0 && (
+              <div style={{ padding: '10px 0', borderBottom: '1px solid var(--n-300)', fontSize: 11, color: 'var(--n-600)' }}>
+                {leerCola().slice(0, 5).map((p, i) => (
+                  <div key={i} style={{ marginTop: i ? 5 : 0 }}>
+                    {p.accion || p.tipo_evento || '?'}{p.fila ? ' · fila ' + p.fila : ''}
+                    {p.cliente_hora ? ' · ' + new Date(p.cliente_hora).toLocaleString('es') : ''}
+                  </div>
+                ))}
+                {pendientes > 5 && <div style={{ marginTop: 5 }}>… y {pendientes - 5} más</div>}
+              </div>
+            )}
             <div style={{ padding: '12px 0', borderBottom: '1px solid var(--n-300)', fontSize: 13.5, color: 'var(--n-600)' }}>
               {ultimaSync ? 'Última sincronización: ' + hace(ultimaSync) : 'Todavía no sincronizó'}
             </div>
             <button className="btn btn-secundario" style={{ marginTop: 12 }} onClick={() => { vaciarCola(setPendientes); refrescar(); }}>
               Volver a sincronizar
             </button>
+            {pendientes > 0 && (
+              // Escape hatch: un envío que el servidor rechaza siempre (p. ej.
+              // corrige/borra una fila que ya no existe) se queda pegado acá
+              // para siempre — antes se perdía en silencio, ahora al menos se
+              // ve y se puede descartar a mano.
+              <button className="btn btn-secundario" style={{ marginTop: 8, color: 'var(--accent-700)' }}
+                      onClick={() => {
+                        if (window.confirm('¿Descartar ' + pendientes + (pendientes === 1 ? ' registro pendiente' : ' registros pendientes') + ' sin enviar? No se puede deshacer.')) {
+                          descartarCola();
+                          setPendientes(0);
+                        }
+                      }}>
+                Descartar pendientes
+              </button>
+            )}
 
             <div className="rotulo" style={{ margin: '20px 0 8px' }}>Recordatorios</div>
             <hr className="regla" />

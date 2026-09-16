@@ -20,6 +20,13 @@ export function leerCola() {
 function guardarCola(cola) {
   try { localStorage.setItem(COLA, JSON.stringify(cola)); } catch { }
 }
+// Último recurso desde Ajustes: descarta lo que haya quedado pegado en la
+// cola offline (p. ej. algo que corrige/borra una fila que ya no existe y
+// nunca va a dejar de fallar). Se pierde ese envío puntual a propósito —
+// es preferible a que se quede trabado ahí para siempre.
+export function descartarCola() {
+  guardarCola([]);
+}
 
 // POST. Si no hay red, guarda en la cola y responde ok/offline.
 export function llamar(body) {
@@ -54,21 +61,35 @@ export function subirArchivo({ nombre, tipo, datos, descripcion, categoria }) {
     .catch(() => ({ ok: false, mensaje: 'Sin conexión' }));
 }
 
-// Envía la cola de a uno, en orden.
+// Envía la cola de a uno, en orden. Un error real del servidor (ok:false,
+// no un problema de red) no es motivo para descartar ese envío como si se
+// hubiera entregado — se pierde para siempre y nadie se entera — pero
+// tampoco puede trabar a los que vienen después: si el primero de la cola
+// queda pegado (p. ej. corrige una fila que ya no existe), todo lo nuevo
+// que se registre después de él tiene que poder salir igual. Por eso se
+// recorre la cola entera en este ciclo en vez de cortar en el primer error,
+// y sólo los que fallaron de verdad (no los que ya se entregaron) quedan
+// guardados para el próximo intento.
 export function vaciarCola(alTerminar) {
   const cola = leerCola();
   if (!cola.length) return Promise.resolve(0);
-  return conTimeout(URL_APP, { method: 'POST', body: JSON.stringify(cola[0]) })
-    .then(res => {
-      // Un error real del servidor (ok:false, no un problema de red) no es
-      // motivo para sacarlo de la cola como si se hubiera entregado: se
-      // pierde para siempre y nadie se entera. Se lo deja en la cola —
-      // sigue viéndose en "N pendientes" — y se reintenta en el próximo ciclo.
-      if (!res.ok) return cola.length;
-      const resto = leerCola().slice(1);
+  return vaciarDesde_(cola, 0, [], alTerminar);
+}
+function vaciarDesde_(cola, i, fallidos, alTerminar) {
+  if (i >= cola.length) {
+    guardarCola(fallidos);
+    if (alTerminar) alTerminar(fallidos.length);
+    return fallidos.length;
+  }
+  return conTimeout(URL_APP, { method: 'POST', body: JSON.stringify(cola[i]) })
+    .then(res => vaciarDesde_(cola, i + 1, res.ok ? fallidos : [...fallidos, cola[i]], alTerminar))
+    .catch(() => {
+      // Sin conexión: no tiene sentido seguir probando el resto ahora. Lo
+      // que ya había fallado de verdad más lo que faltaba por intentar
+      // quedan en la cola entera para el próximo ciclo.
+      const resto = [...fallidos, ...cola.slice(i)];
       guardarCola(resto);
       if (alTerminar) alTerminar(resto.length);
-      return vaciarCola(alTerminar);
-    })
-    .catch(() => cola.length);
+      return resto.length;
+    });
 }
