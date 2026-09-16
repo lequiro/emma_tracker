@@ -552,7 +552,11 @@ export default function App() {
       ...(extra.timestamp ? { iso: extra.timestamp } : {}),
     };
     setRegistros(r => [optimista, ...r]);
-    enviar({ tipo_evento: tipo, ...extra }).then(() => refrescar());
+    // id_local propio (no el 'tmp-' de arriba, que es sólo para matchear la
+    // fila optimista en la UI): si este POST tarda y la app lo reintenta
+    // desde la cola offline pensando que nunca salió, el servidor lo
+    // reconoce como el mismo envío y no lo duplica.
+    enviar({ tipo_evento: tipo, ...extra, id_local: 'r' + Date.now() }).then(() => refrescar());
     notificar(tipo[0].toUpperCase() + tipo.slice(1) + ' registrado · ' + reloj(new Date()), () => {
       setRegistros(r => r.filter(x => x.fila !== optimista.fila));
       enviar({ accion: 'eliminar_ultimo', tipo_evento: tipo }).then(refrescar);
